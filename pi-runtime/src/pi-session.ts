@@ -136,9 +136,25 @@ async function setupPiConfigDir(
   const piSkillsDir = join(piConfigDir, "skills");
   await mkdir(piSkillsDir, { recursive: true });
 
-  // 将 global skills 和 user skills 软链接到 pi config skills 目录
   const { symlink, readdir } = await import("fs/promises");
 
+  // PI_CODING_AGENT_DIR 覆盖了 pi 默认的 ~/.pi/agent 路径，pi 会去 session 目录下找 extensions/。
+  // 必须将 /root/.pi/agent/extensions/ 下所有扩展软链接到此目录，否则：
+  //   - bwrap 扩展不加载 → bash 工具静默退化为无沙盒的直接执行（有网络、无隔离）
+  //   - pi-mcp-adapter 不加载 → MCP 工具全部失效
+  const defaultExtensionsDir = "/root/.pi/agent/extensions";
+  const piExtensionsDir = join(piConfigDir, "extensions");
+  await mkdir(piExtensionsDir, { recursive: true });
+  const extensionEntries = await readdir(defaultExtensionsDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of extensionEntries) {
+    if (!entry.isDirectory()) continue;
+    await symlink(join(defaultExtensionsDir, entry.name), join(piExtensionsDir, entry.name)).catch((err: Error) => {
+      console.error(`[pi-session] session=${sessionId}: 扩展 "${entry.name}" 链接失败:`, err.message);
+    });
+  }
+  console.log(`[pi-session] session=${sessionId}: 已链接 ${extensionEntries.length} 个 pi 扩展`);
+
+  // 将 global skills 和 user skills 软链接到 pi config skills 目录
   for (const [srcRoot, prefix] of [[globalSkillsRoot, "g"], [userSkillsRoot, "u"]] as const) {
     const entries = await readdir(srcRoot, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
