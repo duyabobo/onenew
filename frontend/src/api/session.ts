@@ -68,6 +68,7 @@ export function streamSession(
 
   const handlers: Record<string, (e: MessageEvent) => void> = {
     token: (e) => onEvent({ event: "token", data: e.data }),
+    thinking: (e) => onEvent({ event: "thinking", data: e.data }),
     tool_call: (e) => onEvent({ event: "tool_call", data: e.data }),
     tool_result: (e) => onEvent({ event: "tool_result", data: e.data }),
     snapshot: (e) => {

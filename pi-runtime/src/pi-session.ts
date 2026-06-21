@@ -311,8 +311,12 @@ async function handlePiEvent(
     // ── 文本 token 流（每个 text_delta 是一个增量 token）──────────────────
     case "message_update": {
       const e = event as PiMessageUpdateEvent;
-      if (e.assistantMessageEvent.type === "text_delta" && e.assistantMessageEvent.delta) {
-        await outputStream.push({ event_type: "token", content: e.assistantMessageEvent.delta });
+      const { type: evType, delta } = e.assistantMessageEvent;
+      if (!delta) return false;
+      if (evType === "text_delta") {
+        await outputStream.push({ event_type: "token", content: delta });
+      } else if (evType === "thinking_delta") {
+        await outputStream.push({ event_type: "thinking", content: delta });
       }
       return false;
     }

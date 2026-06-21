@@ -2,28 +2,209 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { createSession, streamSession, getRecentSessions, getSessionDetail, SessionSummary } from "../api/session";
 import { skillsApi, Skill } from "../api/skills";
 
+// ── 消息结构 ────────────────────────────────────────────────────────────────
+
+type MessageType = "text" | "thinking" | "tool_call" | "tool_result";
+
 interface Message {
   role: "user" | "assistant";
+  type: MessageType;
   content: string;
   isStreaming?: boolean;
 }
 
-/** 从 events_snapshot 重建消息内容（把 token 拼接成完整 assistant 消息） */
+// ── 快照重建：把 events_snapshot 转成 Message 列表 ────────────────────────
+
 function buildMessagesFromSnapshot(
   request: string,
   snapshot: Array<{ event_type: string; content: string }>
 ): Message[] {
-  const assistantContent = snapshot
-    .filter((e) => e.event_type === "token")
-    .map((e) => e.content)
-    .join("");
+  const msgs: Message[] = [{ role: "user", type: "text", content: request }];
 
-  const msgs: Message[] = [{ role: "user", content: request }];
-  if (assistantContent) {
-    msgs.push({ role: "assistant", content: assistantContent });
+  for (const event of snapshot) {
+    const last = msgs[msgs.length - 1];
+    if (event.event_type === "token") {
+      if (last?.role === "assistant" && last.type === "text") {
+        last.content += event.content;
+      } else {
+        msgs.push({ role: "assistant", type: "text", content: event.content });
+      }
+    } else if (event.event_type === "thinking") {
+      if (last?.role === "assistant" && last.type === "thinking") {
+        last.content += event.content;
+      } else {
+        msgs.push({ role: "assistant", type: "thinking", content: event.content });
+      }
+    } else if (event.event_type === "tool_call") {
+      msgs.push({ role: "assistant", type: "tool_call", content: event.content });
+    } else if (event.event_type === "tool_result") {
+      msgs.push({ role: "assistant", type: "tool_result", content: event.content });
+    }
   }
   return msgs;
 }
+
+// ── 单条消息渲染 ─────────────────────────────────────────────────────────────
+
+function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  // 思考中时展开，完成后折叠
+  const [open, setOpen] = useState(!!isStreaming);
+  useEffect(() => { if (isStreaming) setOpen(true); }, [isStreaming]);
+  useEffect(() => { if (!isStreaming && open) setOpen(false); }, [isStreaming]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="max-w-[80%] text-xs">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors mb-1"
+      >
+        <svg className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <span className="italic">
+          {isStreaming ? "正在思考…" : "思考过程"}
+        </span>
+        {isStreaming && (
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+        )}
+      </button>
+      {open && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-gray-500 italic whitespace-pre-wrap break-words leading-relaxed">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolCallBlock({ content }: { content: string }) {
+  const [open, setOpen] = useState(true);
+  let name = "";
+  let inputText = "";
+  try {
+    const parsed = JSON.parse(content) as { name: string; input: unknown };
+    name = parsed.name;
+    inputText = JSON.stringify(parsed.input, null, 2);
+  } catch {
+    inputText = content;
+  }
+  return (
+    <div className="max-w-[80%] text-xs">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-indigo-500 hover:text-indigo-700 transition-colors mb-1"
+      >
+        <svg className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <span className="font-mono font-medium text-indigo-600">{name || "工具调用"}</span>
+      </button>
+      {open && (
+        <pre className="bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2 text-gray-600 overflow-x-auto">
+          {inputText}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function ToolResultBlock({ content }: { content: string }) {
+  const [open, setOpen] = useState(false);
+  let name = "";
+  let outputText = "";
+  let isError = false;
+  try {
+    const parsed = JSON.parse(content) as { name: string; output: string; isError?: boolean };
+    name = parsed.name;
+    outputText = parsed.output;
+    isError = !!parsed.isError;
+  } catch {
+    outputText = content;
+  }
+  return (
+    <div className="max-w-[80%] text-xs">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`flex items-center gap-1 transition-colors mb-1 ${isError ? "text-red-400 hover:text-red-600" : "text-green-500 hover:text-green-700"}`}
+      >
+        <svg className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        {isError ? (
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        ) : (
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        )}
+        <span className={`font-mono font-medium ${isError ? "text-red-500" : "text-green-600"}`}>
+          {name ? `${name} 结果` : "执行结果"}
+        </span>
+      </button>
+      {open && (
+        <pre className={`border rounded-xl px-3 py-2 overflow-x-auto ${isError ? "bg-red-50 border-red-100 text-red-600" : "bg-green-50 border-green-100 text-gray-600"}`}>
+          {outputText}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function MessageBubble({ msg }: { msg: Message }) {
+  if (msg.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words bg-indigo-600 text-white rounded-br-sm">
+          {msg.content}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.type === "thinking") {
+    return (
+      <div className="flex justify-start">
+        <ThinkingBlock content={msg.content} isStreaming={msg.isStreaming} />
+      </div>
+    );
+  }
+
+  if (msg.type === "tool_call") {
+    return (
+      <div className="flex justify-start">
+        <ToolCallBlock content={msg.content} />
+      </div>
+    );
+  }
+
+  if (msg.type === "tool_result") {
+    return (
+      <div className="flex justify-start">
+        <ToolResultBlock content={msg.content} />
+      </div>
+    );
+  }
+
+  // type === "text"
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm">
+        {msg.content}
+        {msg.isStreaming && (
+          <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1 align-middle rounded-sm" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 主页面 ───────────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
   const [userId, setUserId] = useState(() => localStorage.getItem("pi_user_id") ?? "");
@@ -39,7 +220,6 @@ export default function ChatPage() {
   const closeStreamRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // 加载 skill 列表
   useEffect(() => {
     skillsApi.list()
       .then((list) => setSkills(list.filter((s) => !s.hidden)))
@@ -50,7 +230,6 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // userId 变化时拉取历史 session 列表
   const loadHistory = useCallback(async (uid: string) => {
     if (!uid.trim()) { setSessions([]); return; }
     const list = await getRecentSessions(uid);
@@ -58,20 +237,16 @@ export default function ChatPage() {
     return list;
   }, []);
 
-  // 页面挂载时自动恢复最近一次已完成的会话
   useEffect(() => {
     if (!userId.trim()) return;
     loadHistory(userId).then((list) => {
       if (!list || list.length === 0) return;
       const lastCompleted = list.find((s) => s.status === "COMPLETED");
-      if (lastCompleted) {
-        loadSessionMessages(lastCompleted.session_id);
-      }
+      if (lastCompleted) loadSessionMessages(lastCompleted.session_id);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 加载某个 session 的历史消息
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     const detail = await getSessionDetail(sessionId);
     if (!detail) return;
@@ -80,14 +255,29 @@ export default function ChatPage() {
     setActiveSessionId(sessionId);
   }, []);
 
-  const appendToLastAssistant = useCallback((text: string) => {
+  /**
+   * 追加内容到最后一条指定类型的 assistant 消息，若类型不符则新建一条。
+   */
+  const appendToLastOfType = useCallback((type: MessageType, text: string) => {
     setMessages((prev) => {
       const last = prev[prev.length - 1];
-      if (last?.role === "assistant") {
+      if (last?.role === "assistant" && last.type === type) {
         return [...prev.slice(0, -1), { ...last, content: last.content + text }];
       }
-      return [...prev, { role: "assistant", content: text, isStreaming: true }];
+      return [...prev, { role: "assistant", type, content: text, isStreaming: true }];
     });
+  }, []);
+
+  /** tool_call / tool_result 是离散事件，每次都新建一条消息 */
+  const addDiscreteMessage = useCallback((type: MessageType, content: string) => {
+    setMessages((prev) => [...prev, { role: "assistant", type, content }]);
+  }, []);
+
+  /** 把最后一条流式 assistant 消息标记为完成 */
+  const markStreamingDone = useCallback(() => {
+    setMessages((prev) =>
+      prev.map((m, i) => (i === prev.length - 1 ? { ...m, isStreaming: false } : m))
+    );
   }, []);
 
   const send = useCallback(async () => {
@@ -99,31 +289,30 @@ export default function ChatPage() {
     setError("");
     setInput("");
     setIsLoading(true);
-    setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
+    setMessages((prev) => [...prev, { role: "user", type: "text", content: trimmed }]);
 
     const skillIds = selectedSkillId ? [selectedSkillId] : [];
 
     try {
       const { session_id } = await createSession(userId, trimmed, skillIds);
       setActiveSessionId(session_id);
-      setMessages((prev) => [...prev, { role: "assistant", content: "", isStreaming: true }]);
 
       closeStreamRef.current = streamSession(
         session_id,
         (ev) => {
           if (ev.event === "token") {
-            appendToLastAssistant(ev.data);
+            appendToLastOfType("text", ev.data);
+          } else if (ev.event === "thinking") {
+            appendToLastOfType("thinking", ev.data);
           } else if (ev.event === "tool_call") {
-            const tc = JSON.parse(ev.data) as { name: string; input: unknown };
-            appendToLastAssistant(`\n\`\`\`tool:${tc.name}\n${JSON.stringify(tc.input, null, 2)}\n\`\`\`\n`);
+            addDiscreteMessage("tool_call", ev.data);
+          } else if (ev.event === "tool_result") {
+            addDiscreteMessage("tool_result", ev.data);
           }
         },
         () => {
           setIsLoading(false);
-          setMessages((prev) =>
-            prev.map((m, i) => (i === prev.length - 1 ? { ...m, isStreaming: false } : m))
-          );
-          // 刷新历史列表，让新完成的 session 出现在列表中
+          markStreamingDone();
           loadHistory(userId);
         },
         (msg) => {
@@ -135,7 +324,7 @@ export default function ChatPage() {
       setError(e instanceof Error ? e.message : "请求失败");
       setIsLoading(false);
     }
-  }, [input, userId, isLoading, selectedSkillId, appendToLastAssistant, loadHistory]);
+  }, [input, userId, isLoading, selectedSkillId, appendToLastOfType, addDiscreteMessage, markStreamingDone, loadHistory]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -240,33 +429,20 @@ export default function ChatPage() {
           )}
 
           {isLoading && (
-            <span className="ml-auto text-xs text-indigo-500 animate-pulse">Pi 正在思考…</span>
+            <span className="ml-auto text-xs text-indigo-500 animate-pulse">Pi 正在执行…</span>
           )}
           {error && <span className="ml-auto text-xs text-red-500">{error}</span>}
         </div>
 
         {/* 消息列表 */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-gray-50">
           {messages.length === 0 && (
             <div className="text-center text-gray-400 mt-20 text-sm">
               选择 Skill（可选），发送消息，Pi Agent 将为你执行任务
             </div>
           )}
           {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words ${
-                  msg.role === "user"
-                    ? "bg-indigo-600 text-white rounded-br-sm"
-                    : "bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm"
-                }`}
-              >
-                {msg.content}
-                {msg.isStreaming && (
-                  <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1 align-middle rounded-sm" />
-                )}
-              </div>
-            </div>
+            <MessageBubble key={i} msg={msg} />
           ))}
           <div ref={bottomRef} />
         </div>
