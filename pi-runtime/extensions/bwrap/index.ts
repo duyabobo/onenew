@@ -1,25 +1,44 @@
 /**
  * Pi Agent bwrap 沙盒扩展。
  *
- * 核心机制：
- *   pi 执行 bash 命令时会调用内置的 "bash" 工具。
- *   本扩展通过 pi.registerTool("bash", handler) 覆盖该工具，
- *   将命令路由到 bwrap 沙盒中执行。
+ * ═══════════════════════════════════════════════════════════════
+ * ⚠️  PI 版本兼容性说明（升级 pi 时必读）
+ * ═══════════════════════════════════════════════════════════════
+ * 本文件依赖以下 pi Extension API，升级 pi 后需验证这些点：
  *
- *   重要：只覆盖 "bash" 工具。
- *   pi 的 read/write/edit 工具直接在 Node.js 进程中执行（不经过 bash），
- *   不在此处拦截，由 pi 默认处理。
+ * 1. pi.registerTool(name, handler)
+ *    用于覆盖 pi 内置工具。若 pi 改名此方法，需同步修改。
+ *    当前使用版本：pi@0.79.x
+ *
+ * 2. 工具名称（如 pi 重命名内置工具，需同步修改）：
+ *    "bash"  → pi 执行 shell 命令的工具
+ *    "read"  → pi 读文件工具
+ *    "write" → pi 写文件工具
+ *    "edit"  → pi 编辑文件工具
+ *
+ * 3. handler 返回 undefined 触发 fallthrough（交由 pi 默认实现处理）
+ *    用于 read/write/edit 路径校验通过后的透传。
+ *    若 pi 改变此语义，需改为自行实现文件读写。
+ *
+ * 升级 pi 时的验证步骤：
+ *   1. docker build（会在构建时暴露 npm 安装错误）
+ *   2. 启动容器，跑一个简单任务，确认 bash 命令走了 bwrap
+ *   3. 确认 read/write 工具的路径校验正常
+ *   4. 确认越界路径被拦截
+ * ═══════════════════════════════════════════════════════════════
  *
  * 沙盒特性（由 worker 在启动 pi 进程前注入环境变量）：
- *   PI_SANDBOX_WORKSPACE → bwrap 内挂载为 /workspace（每 session 唯一目录）
- *   PI_SANDBOX_HOME      → bwrap 内挂载为 /root（每 session/user 独立 home）
+ *   PI_SANDBOX_WORKSPACE → session 专属工作目录（bwrap 内外路径一致）
+ *   PI_SANDBOX_HOME      → session 专属 home（bwrap 内外路径一致）
+ *   PI_SANDBOX_TMP       → session 临时目录
  *   --unshare-net        → 禁止网络访问
  *   --unshare-pid        → 独立 PID 空间
  */
 
 import { spawn } from "child_process";
 
-// pi 扩展 API 类型声明
+// ── pi Extension API 类型声明 ──────────────────────────────────────────────────
+// 如果 pi 升级后 API 变化，只需修改这里的类型声明和下方的 pi.registerTool 调用。
 interface PiToolHandler {
   (input: Record<string, unknown>): Promise<PiToolResult>;
 }

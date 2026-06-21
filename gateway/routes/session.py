@@ -14,12 +14,13 @@ router = APIRouter(prefix="/sessions", tags=["session"])
 @router.post("", response_model=CreateSessionResponse, status_code=status.HTTP_200_OK)
 async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResponse:
     """
-    幂等创建 session：相同 user_id + request 且任务未终态时直接返回已有 session_id。
-    否则创建新 session 并派发任务到 pi-runtime。
+    创建 session。
+    支持同一用户并发多个 session，每个 session 拥有独立的文件系统（session 级隔离）。
+    相同 request 的幂等性：若该 user 已有相同 request 的进行中 session，直接返回它。
     """
-    existing = await mongo_client.find_active_session(body.user_id, body.request)
+    existing = await mongo_client.find_active_session_by_request(body.user_id, body.request)
     if existing:
-        logger.info("复用已有 session: %s user=%s", existing.id, body.user_id)
+        logger.info("复用进行中的 session: %s user=%s", existing.id, body.user_id)
         return CreateSessionResponse(session_id=existing.id, status=existing.status)
 
     session_id = str(uuid.uuid4())

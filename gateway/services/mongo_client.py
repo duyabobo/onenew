@@ -52,8 +52,11 @@ async def get_session(session_id: str) -> SessionDocument | None:
     return SessionDocument(**raw)
 
 
-async def find_active_session(user_id: str, request: str) -> SessionDocument | None:
-    """幂等查找：相同 user_id + request 且非终态的 session"""
+async def find_active_session_by_request(user_id: str, request: str) -> SessionDocument | None:
+    """
+    幂等性查找：同一 user 发起相同 request 时，若已有进行中的 session 则复用。
+    支持并发不同 request 的多个 session（session 级文件系统隔离，互不影响）。
+    """
     db = get_db()
     raw = await db.sessions.find_one(
         {

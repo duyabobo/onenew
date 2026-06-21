@@ -13,8 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-# 全局安装 pi coding agent
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# 全局安装 pi coding agent（锁定版本，升级前先在测试环境验证扩展兼容性）
+# 升级步骤：1.改版本号 2.本地 build 测试 3.确认 bwrap 扩展正常工作 4.部署
+ARG PI_VERSION=0.79.9
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
 
 # 安装 pi-mcp-adapter 插件（pi 调用 MCP 服务的唯一社区适配器）
 # 等效于交互式环境下执行 `pi install npm:pi-mcp-adapter`
