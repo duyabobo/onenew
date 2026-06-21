@@ -4,138 +4,65 @@
 
 ---
 
-## 架构总览（精简版）
+## 整体架构（简要版）
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "linear"}}}%%
 flowchart LR
-    Browser["浏览器\n前端 :3000"]
-
-    subgraph api [API 层]
-        Gateway["gateway :8000\n会话 + SSE"]
-        Admin["admin :9000\nLLM代理 + 配置"]
-    end
-
-    subgraph exec [执行层]
-        PiRuntime["pi-runtime\nPi Agent + bwrap"]
-        McpServers["MCP Servers\n(按需启动进程)"]
-    end
-
-    subgraph store [存储层]
-        Redis[("Redis\nPub/Sub + Stream")]
-        Mongo[("MongoDB\nsessions/configs/skills")]
-        FS[["共享文件系统\nbwrap沙盒 + Skill文件"]]
-    end
-
-    subgraph ext [外部]
-        LLM["LLM Provider"]
-        RemoteMCP["远程MCP\n(可选)"]
-    end
-
-    Browser -- "会话/SSE" --> Gateway
-    Browser -- "配置管理" --> Admin
-
-    Gateway -- "任务派发" --> Redis
-    Gateway -- "SSE拉取" --> Redis
-    Gateway -- "session读写" --> Mongo
-
-    Redis -- "任务订阅" --> PiRuntime
-    PiRuntime -- "输出推流" --> Redis
-    PiRuntime -- "配置读取/状态更新" --> Mongo
-    PiRuntime -- "LLM调用" --> Admin
-    PiRuntime -- "工具调用" --> McpServers
-    PiRuntime -- "沙盒执行/skill加载" --> FS
-    McpServers -. "HTTP/SSE" .-> RemoteMCP
-
-    Admin -- "配置持久化" --> Mongo
-    Admin -- "SKILL.md写入" --> FS
-    Admin -- "转发推理" --> LLM
-```
-
----
-
-## 整体架构（详细版）
-
-```mermaid
-flowchart TB
-    subgraph client [Client]
-        Browser["浏览器\n前端 :3000"]
-    end
-
-    subgraph compose [Docker Compose]
-        subgraph api [API 层]
-            Gateway["gateway\nFastAPI :8000\n会话管理 + SSE 流"]
-            Admin["admin\nFastAPI :9000\nLLM 代理 + 配置管理"]
-        end
-
-        subgraph runtime [执行层]
-            PiRuntime["pi-runtime\nNode.js Worker\nPi Agent RPC + bwrap 沙盒"]
-            subgraph mcp [MCP Server 进程（由 pi-mcp-adapter 按需启动）]
-                McpFS["filesystem-mcp\n文件读写\n限 /workspace"]
-                McpHTTP["http-client-mcp\nHTTP 请求\n沙盒外执行"]
-                McpDB["database-mcp\nMongoDB 只读\n沙盒外执行"]
+    subgraph mid[" "]
+        direction TB
+        subgraph row_api[" "]
+            direction LR
+            Browser["浏览器\n前端 :3000"]
+            subgraph api ["接口层"]
+                direction TB
+                Gateway["gateway\nFastAPI :8000\n会话管理 + SSE 流"]
+                Admin["admin\nFastAPI :9000\n配置管理"]
             end
         end
-
-        subgraph storage [存储层]
-            Redis[("Redis :6379\nPub/Sub + Stream")]
-            subgraph mongo [MongoDB :27017]
-                ColSessions[/"sessions\n会话文档 + 事件快照"/]
-                ColConfigs[/"configs\nllm / mcp 配置文档"/]
-                ColSkills[/"skills\nSkill 元数据\nname/description/tags"/]
-            end
-        end
-
-        subgraph sandbox [沙盒 + 文件系统（持久化卷）]
-            Bwrap["bwrap 沙盒（per session）\nworkspace/ home/ tmp/"]
-            SkillFS["Skill 文件系统\nglobal/skills/{name}/SKILL.md\nusers/{uid}/skills/{name}/SKILL.md"]
+        subgraph piruntime ["执行层"]
+            direction TB
+            PiAgent["Pi Agent\nRPC 模式"]
+            McpAdapter["pi-mcp-adapter\nMCP Client"]
+            Bwrap["bwrap\nsession 级别的 cmd 执行沙盒"]
+            SkillFS["Skill 文件管理\nuser 级别的文件管理系统"]
         end
     end
 
-    subgraph external [外部服务]
-        LLM["LLM Provider\nAnthropic / OpenAI / 其他"]
-        RemoteMCP["远程 MCP Server（可选）\nHTTP / SSE transport"]
-        NFS["共享存储\nNFS / EFS / NAS\n集群部署时使用"]
+    subgraph persist ["持久化层"]
+        direction TB
+        Redis[("Redis :6379\nPub/Sub + Stream")]
+        subgraph mongo ["MongoDB :27017"]
+            ColSessions[/"sessions\n会话文档"/]
+            ColConfigs[/"configs\nLLM/MCP 配置"/]
+            ColSkills[/"skills\nSkill 元数据"/]
+        end
+        NFS["NFS 共享存储\n集群部署"]
     end
 
-    %% 用户请求链路
-    Browser -->|"POST /sessions\n选 Skill"| Gateway
-    Browser -->|"GET /sessions/{id}/stream SSE"| Gateway
-    Browser -->|"GET /skills 下拉列表"| Gateway
-    Browser -->|"GET/PUT /config/llm\nGET/PUT /config/mcp\nSkill CRUD"| Admin
+    subgraph capability ["能力层"]
+        direction TB
+        LLM["LLM Proxy\nAnthropic / OpenAI"]
+        McpExt["MCP Servers\n业务工具服务"]
+    end
 
-    %% Gateway ↔ 存储
-    Gateway -->|"写 session 文档"| ColSessions
-    Gateway -->|"PUBLISH sessions:new"| Redis
-    Gateway -->|"XREAD BLOCK stream"| Redis
-    Gateway -->|"读 skill 元数据列表"| ColSkills
+    Browser -->|"会话"| Gateway
+    Browser -->|"配置管理"| Admin
 
-    %% Admin ↔ 存储（配置管理职责）
-    Admin -->|"读写 LLM 配置"| ColConfigs
-    Admin -->|"读写 MCP 配置"| ColConfigs
-    Admin -->|"写 skill 元数据"| ColSkills
-    Admin -->|"写 SKILL.md 文件"| SkillFS
+    Gateway -->|"订阅会话事件"| Redis
+    Gateway -->|"创建会话任务 / 获取历史消息"| mongo
 
-    %% pi-runtime ↔ 存储
-    PiRuntime -->|"SUBSCRIBE sessions:new"| Redis
-    PiRuntime -->|"XADD 输出事件"| Redis
-    PiRuntime -->|"读 MCP 配置"| ColConfigs
-    PiRuntime -->|"更新 session 状态"| ColSessions
-    PiRuntime -->|"读 SKILL.md 文件\n软链 global+user skills"| SkillFS
+    Admin -->|"LLM & MCP 配置 / Skill 元数据"| mongo
 
-    %% pi-runtime 执行
-    PiRuntime -->|"POST /v1/chat/completions"| Admin
-    PiRuntime -->|"bash 命令\n--unshare-net"| Bwrap
-    PiRuntime -->|"按需启动\nstdio transport"| McpFS
-    PiRuntime -->|"按需启动\nstdio transport"| McpHTTP
-    PiRuntime -->|"按需启动\nstdio transport"| McpDB
-    PiRuntime -.->|"可选\nHTTP/SSE transport"| RemoteMCP
+    piruntime -->|"LLM 推理"| LLM
+    piruntime -->|"MCP 工具调用"| McpExt
+    piruntime -->|"增量输出事件"| Redis
+    piruntime -->|"更新会话状态\n存储历史消息"| mongo
+    Bwrap -.->|"共享挂载"| NFS
+    SkillFS -.->|"共享挂载"| NFS
 
-    %% Admin ↔ 外部
-    Admin -->|"透传 LLM 请求"| LLM
-
-    %% 集群存储
-    Bwrap -.->|"集群共享挂载"| NFS
-    SkillFS -.->|"集群共享挂载"| NFS
+    style mid fill:none,stroke:none
+    style row_api fill:none,stroke:none
 ```
 
 ---
@@ -154,21 +81,23 @@ flowchart TB
 
 ## MCP Server 管理关系
 
-```
-Admin 页配置 MCP Server（POST /config/mcp）
-  → 写 MongoDB configs.mcp
-  
-  session 启动时：
-  pi-runtime 读 MongoDB configs.mcp
-  → 写 /tmp/pi-config/{session_id}/mcp.json
-  → pi-mcp-adapter 加载配置
-  → 用户 prompt 触发工具调用时按需启动 MCP Server 进程（stdio）
-  → 工具调用完成后进程空闲超时自动退出
+MCP Server 是**完全外部、与本项目解耦**的业务工具服务，由各业务方自行开发和部署。
 
-外部 MCP Server（HTTP/SSE transport）：
-  直接在 mcp.json 中配置 url 字段
-  → pi-mcp-adapter 通过 HTTP/SSE 连接，无需本地启动进程
 ```
+业务方自行部署 MCP Server（任意语言、任意位置）
+  ↓ 向 Admin 注册 endpoint
+Admin 页配置 MCP Server（POST /config/mcp）
+  → 写 MongoDB configs.mcp（存储 name / url / transport 等元数据）
+
+  ↓ session 启动时
+pi-runtime 读 MongoDB configs.mcp
+  → 写 /tmp/pi-config/{session_id}/mcp.json
+  → pi-mcp-adapter（MCP Client）加载配置
+  → 用户 prompt 触发工具调用时，pi-mcp-adapter 通过 HTTP/SSE 连接 MCP Server
+  → 工具调用完成，连接空闲超时自动断开
+```
+
+**本项目只实现 MCP Client 侧**（pi-mcp-adapter 插件），不包含任何 MCP Server 代码。新增工具能力只需部署新的 MCP Server 并在 Admin 注册，无需改动本项目。
 
 ---
 
