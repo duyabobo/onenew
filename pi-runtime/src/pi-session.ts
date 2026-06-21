@@ -6,35 +6,58 @@ import { SandboxPaths } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
 import { getMcpConfig } from "./mongo-client";
 
-// Pi RPC 消息类型（根据 pi docs/rpc.md）
-interface PiRpcMessage {
-  type: string;
-  [key: string]: unknown;
+// Pi RPC 协议类型（基于 pi@0.79.x rpc-types.d.ts / agent-core/types.d.ts）
+// 命令方向：host → pi (stdin)
+interface PiPromptCommand {
+  type: "prompt";
+  message: string; // 注意：是 message，不是 text
 }
 
-interface PiTextEvent {
-  type: "text";
-  text: string;
-}
-
-interface PiToolCallEvent {
-  type: "tool_call";
-  name: string;
-  input: Record<string, unknown>;
-}
-
-interface PiToolResultEvent {
-  type: "tool_result";
-  name: string;
-  output: string;
-}
-
-interface PiDoneEvent {
-  type: "done" | "error";
+// 响应方向：pi → host (stdout)
+// ── 命令确认 ──────────────────────────────────────────────────────────────
+interface PiCommandResponse {
+  type: "response";
+  command: string;
+  success: boolean;
   error?: string;
 }
 
-type PiEvent = PiTextEvent | PiToolCallEvent | PiToolResultEvent | PiDoneEvent;
+// ── AgentSessionEvent（session.subscribe 直接 output）────────────────────
+interface PiMessageUpdateEvent {
+  type: "message_update";
+  assistantMessageEvent: {
+    type: string;
+    delta?: string;       // text_delta / thinking_delta
+    contentIndex?: number;
+  };
+}
+
+interface PiToolExecutionStartEvent {
+  type: "tool_execution_start";
+  toolCallId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+}
+
+interface PiToolExecutionEndEvent {
+  type: "tool_execution_end";
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+  isError: boolean;
+}
+
+interface PiAgentEndEvent {
+  type: "agent_end";
+}
+
+type PiEvent =
+  | PiCommandResponse
+  | PiMessageUpdateEvent
+  | PiToolExecutionStartEvent
+  | PiToolExecutionEndEvent
+  | PiAgentEndEvent
+  | { type: string; [key: string]: unknown };
 
 /**
  * 通过 RPC 模式启动 pi agent，将输出流式推送到 Redis Stream。
@@ -56,6 +79,34 @@ async function setupPiConfigDir(
   const mcpConfig = await getMcpConfig();
   const piMcpJson = { mcpServers: mcpConfig.servers };
   await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify(piMcpJson, null, 2));
+
+  // 注册 llm-proxy 自定义 provider（pi 通过 openai-completions API 调用 llm-proxy）
+  // llm-proxy 会忽略 model 字段，始终使用自身配置的 model，所以 model id 只是占位符
+  const piModelsJson = {
+    providers: {
+      "llm-proxy": {
+        baseUrl: process.env.OPENAI_BASE_URL ?? "http://llm-proxy:9001/v1",
+        api: "openai-completions",
+        apiKey: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+        },
+        models: [
+          {
+            id: "default",
+            name: "LLM Proxy (via llm-proxy)",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 128000,
+            maxTokens: 8192,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    },
+  };
+  await writeFile(join(piConfigDir, "models.json"), JSON.stringify(piModelsJson, null, 2));
 
   // Skills 目录：合并 global + user 专属 skill，pi 从此处自动发现（无用户选定时）
   // 通过软链接指向真实目录，避免文件复制
@@ -145,8 +196,8 @@ export async function runPiSession(
       sandboxPaths.userSkills
     );
 
-    const piArgs = ["--mode", "rpc", "--no-session", "--provider", "openai", ...skillArgs];
-    console.log(`[pi-session] session ${sessionId}: 启动 pi 进程 args=[${piArgs.join(" ")}] cwd=${sandboxPaths.workspace} OPENAI_BASE_URL=${piEnv.OPENAI_BASE_URL}`);
+    const piArgs = ["--mode", "rpc", "--no-session", "--provider", "llm-proxy", "--model", "default", ...skillArgs];
+    console.log(`[pi-session] session ${sessionId}: 启动 pi 进程 args=[${piArgs.join(" ")}] cwd=${sandboxPaths.workspace}`);
 
     const piProcess: ChildProcess = spawn("pi", piArgs, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -162,11 +213,10 @@ export async function runPiSession(
 
     rl.on("line", async (line) => {
       if (!line.trim()) return;
-      let msg: PiRpcMessage;
+      let msg: PiEvent;
       try {
-        msg = JSON.parse(line) as PiRpcMessage;
+        msg = JSON.parse(line) as PiEvent;
       } catch {
-        // pi 可能输出非 JSON 的调试信息，忽略
         console.warn(`[pi-session] session ${sessionId}: 忽略非 JSON 输出: ${line.slice(0, 100)}`);
         return;
       }
@@ -175,13 +225,10 @@ export async function runPiSession(
       if (lineCount === 1) {
         console.log(`[pi-session] session ${sessionId}: 收到 pi 首条消息 type=${msg.type}`);
       }
-      if (msg.type === "done" || msg.type === "error") {
-        console.log(`[pi-session] session ${sessionId}: pi 终止消息 type=${msg.type} 共 ${lineCount} 条消息`);
-      }
 
-      await handlePiEvent(msg as unknown as PiEvent, sessionId, outputStream);
-
-      if (msg.type === "done" || msg.type === "error") {
+      const shouldStop = await handlePiEvent(msg, sessionId, outputStream);
+      if (shouldStop) {
+        console.log(`[pi-session] session ${sessionId}: 收到终止事件，关闭 stdin，共 ${lineCount} 条消息`);
         piProcess.stdin!.end();
       }
     });
@@ -205,46 +252,82 @@ export async function runPiSession(
       reject(err);
     });
 
-    // 直接发送用户 prompt，skill 由 pi 原生渐进式披露机制处理
-    const promptPayload = { type: "prompt", text: request };
+    // 发送 prompt（pi RPC 协议用 message 字段，不是 text）
+    const promptPayload: PiPromptCommand = { type: "prompt", message: request };
     piProcess.stdin!.write(JSON.stringify(promptPayload) + "\n");
     console.log(`[pi-session] session ${sessionId}: prompt 已写入 stdin（${request.length} 字符）`);
   });
 }
 
+/**
+ * 处理 pi RPC 事件，返回 true 表示应终止（关闭 stdin）。
+ *
+ * pi@0.79.x 输出两类 JSON：
+ * 1. { type: "response", command, success } — 命令确认
+ * 2. AgentSessionEvent — session.subscribe 直接 output 的事件流
+ */
 async function handlePiEvent(
   event: PiEvent,
   sessionId: string,
   outputStream: SessionOutputStream
-): Promise<void> {
+): Promise<boolean> {
   switch (event.type) {
-    case "text":
-      await outputStream.push({
-        event_type: "token",
-        content: event.text,
-      });
-      break;
+    // ── 命令确认（response to "prompt"）──────────────────────────────────
+    case "response": {
+      const resp = event as PiCommandResponse;
+      if (!resp.success) {
+        console.error(`[pi-session] session ${sessionId}: prompt 命令失败 error=${resp.error}`);
+        await outputStream.pushError(resp.error ?? "pi prompt 命令失败");
+        await outputStream.pushDone();
+        return true;
+      }
+      console.log(`[pi-session] session ${sessionId}: prompt 命令已接受（preflight 通过）`);
+      return false;
+    }
 
-    case "tool_call":
+    // ── 文本 token 流（每个 text_delta 是一个增量 token）──────────────────
+    case "message_update": {
+      const e = event as PiMessageUpdateEvent;
+      if (e.assistantMessageEvent.type === "text_delta" && e.assistantMessageEvent.delta) {
+        await outputStream.push({ event_type: "token", content: e.assistantMessageEvent.delta });
+      }
+      return false;
+    }
+
+    // ── 工具调用开始 ──────────────────────────────────────────────────────
+    case "tool_execution_start": {
+      const e = event as PiToolExecutionStartEvent;
       await outputStream.push({
         event_type: "tool_call",
-        content: JSON.stringify({ name: event.name, input: event.input }),
+        content: JSON.stringify({ name: e.toolName, input: e.args }),
       });
-      break;
+      return false;
+    }
 
-    case "tool_result":
+    // ── 工具调用结束 ──────────────────────────────────────────────────────
+    case "tool_execution_end": {
+      const e = event as PiToolExecutionEndEvent;
+      const output = typeof e.result === "string" ? e.result : JSON.stringify(e.result);
       await outputStream.push({
         event_type: "tool_result",
-        content: JSON.stringify({ name: event.name, output: event.output }),
+        content: JSON.stringify({ name: e.toolName, output, isError: e.isError }),
       });
-      break;
+      return false;
+    }
 
-    case "done":
+    // ── Agent 执行结束（本次 prompt 处理完毕）─────────────────────────────
+    case "agent_end": {
+      console.log(`[pi-session] session ${sessionId}: agent_end 收到，推送 done`);
       await outputStream.pushDone();
-      break;
+      return true;
+    }
 
-    case "error":
-      await outputStream.pushError(event.error ?? "未知错误");
-      break;
+    default: {
+      // 临时：记录所有未处理事件，用于排查 pi 输出的完整事件序列
+      const unknown = event as { type: string; [key: string]: unknown };
+      const keys = Object.keys(unknown).filter(k => k !== "type").join(",");
+      console.log(`[pi-session] session ${sessionId}: 忽略事件 type=${unknown.type} fields=[${keys}]`);
+      return false;
+    }
   }
 }

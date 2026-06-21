@@ -26,20 +26,24 @@ def _build_upstream_headers() -> dict[str, str]:
     }
 
 
-def _inject_default_model(body: dict[str, Any]) -> dict[str, Any]:
-    if not body.get("model"):
-        body["model"] = get_effective_config().model
+def _apply_model(body: dict[str, Any]) -> dict[str, Any]:
+    """始终用代理自身配置的 model 覆盖请求中的 model 字段。
+    客户端（pi 等）传入的 model 名可能与上游不兼容，由 proxy 统一管理。
+    """
+    body["model"] = get_effective_config().model
     return body
 
 
 @router.post("/chat/completions", response_model=None)
 async def proxy_chat_completions(request: Request) -> StreamingResponse | dict:
     body: dict[str, Any] = await request.json()
-    body = _inject_default_model(body)
+    original_model = body.get("model", "<unset>")
+    body = _apply_model(body)
     is_stream = body.get("stream", False)
 
     cfg = get_effective_config()
-    logger.info("LLM 代理: model=%s stream=%s → %s", body.get("model"), is_stream, cfg.base_url)
+    logger.info("LLM 代理: model=%s (client=%s) stream=%s → %s",
+                body.get("model"), original_model, is_stream, cfg.base_url)
 
     upstream_url = _build_upstream_url("/chat/completions")
     headers = _build_upstream_headers()
