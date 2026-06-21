@@ -184,17 +184,16 @@ pi-runtime SUBSCRIBE sessions:new
 ## 快速开始
 
 ```bash
-# 1. 初始化配置
-cp .env.example .env
-# 编辑 .env，填写 LLM_API_KEY 和 LLM_BASE_URL
-
-# 2. 一键部署
+# 一键部署（首次运行自动创建 .env）
 bash deploy.sh
 
-# 3. 访问
-# 前端   → http://localhost:3000
-# API    → http://localhost:8000/docs
-# Admin  → http://localhost:9000/docs
+# 访问
+# 前端      → http://localhost:3000
+# API       → http://localhost:8000/docs
+# Admin     → http://localhost:9000/docs
+# LLM Proxy → http://localhost:9001/docs
+
+# 启动后在前端管理页面配置 LLM Provider（base_url / api_key / model）
 ```
 
 ## 集群部署
@@ -218,6 +217,7 @@ pi-agent-platform/
 ├── .env.example
 ├── frontend/              # React + Vite 前端（README.md）
 ├── gateway/               # FastAPI 会话网关（README.md）
-├── admin/                 # FastAPI 管理服务（README.md）
+├── admin/                 # FastAPI 管理服务 - MCP/Skill 配置（README.md）
+├── llm-proxy/             # FastAPI LLM 代理服务（README.md）
 └── pi-runtime/            # Node.js Pi Agent 执行引擎（README.md）
 ```

@@ -58,19 +58,11 @@ check_prerequisites() {
 setup_env() {
   if [[ ! -f .env ]]; then
     cp .env.example .env
-    warn ".env 不存在，已从 .env.example 创建，请填写以下必要配置后重新运行："
-    echo ""
-    echo "  LLM_API_KEY=<你的 LLM API Key>"
-    echo "  LLM_BASE_URL=<LLM 接口地址>"
-    echo ""
-    exit 1
+    info ".env 不存在，已从 .env.example 自动创建"
   fi
 
-  # 检查必要变量
   # shellcheck source=/dev/null
   source .env
-  [[ -z "${LLM_API_KEY:-}" ]] && error ".env 中 LLM_API_KEY 未设置"
-  [[ -z "${LLM_BASE_URL:-}" ]] && error ".env 中 LLM_BASE_URL 未设置"
 
   if [[ "$MODE" == "prod" ]]; then
     [[ -z "${NFS_SERVER_ADDR:-}" ]] && error "生产模式需要设置 NFS_SERVER_ADDR"
