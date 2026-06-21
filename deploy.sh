@@ -116,7 +116,7 @@ do_start() {
 
 # ── 等待健康检查 ─────────────────────────────────────────────────────────────────
 wait_healthy() {
-  local services=("mongo" "redis" "admin" "gateway" "frontend")
+  local services=("mongo" "redis" "llm-proxy" "admin" "gateway" "frontend")
   local timeout=120
   local interval=5
 

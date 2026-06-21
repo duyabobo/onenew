@@ -18,26 +18,25 @@ flowchart LR
                 direction TB
                 Gateway["gateway\nFastAPI :8000\n会话管理 + SSE 流"]
                 Admin["admin\nFastAPI :9000\n配置管理"]
+                LLMProxy["LLM Proxy\nFastAPI :9001\nLLM 代理"]
             end
         end
-        subgraph piruntime ["执行层"]
+        subgraph piruntime ["执行层（pi-runtime）"]
             direction TB
-            PiAgent["Pi Agent\nRPC 模式"]
             McpAdapter["pi-mcp-adapter\nMCP Client"]
             Bwrap["bwrap\nsession 级别的 cmd 执行沙盒"]
             SkillFS["Skill 文件管理\nuser 级别的文件管理系统"]
+            PiAgent["任务执行"]
         end
     end
 
     subgraph persist ["持久化层"]
         direction TB
-        Redis[("Redis :6379\nPub/Sub + Stream")]
-        subgraph mongo ["MongoDB :27017"]
-            ColSessions[/"sessions\n会话文档"/]
-            ColConfigs[/"configs\nLLM/MCP 配置"/]
-            ColSkills[/"skills\nSkill 元数据"/]
-        end
         NFS["NFS 共享存储\n集群部署"]
+        subgraph mongo ["MongoDB :27017  \n  sessions / configs"]
+        end
+        Gap[ ]
+        Redis[("Redis :6379\nPub/Sub + Stream")]
     end
 
     subgraph capability ["能力层"]
@@ -47,22 +46,27 @@ flowchart LR
     end
 
     Browser -->|"会话"| Gateway
-    Browser -->|"配置管理"| Admin
+    Browser -->|"配置"| Admin
+
+    Gateway -->|"创建会话任务\n获取历史消息"| mongo
+    Admin -->|"LLM & MCP 配置"| mongo
+    LLMProxy -->|"读取 LLM 配置"| mongo
 
     Gateway -->|"订阅会话事件"| Redis
-    Gateway -->|"创建会话任务 / 获取历史消息"| mongo
 
-    Admin -->|"LLM & MCP 配置 / Skill 元数据"| mongo
-
-    piruntime -->|"LLM 推理"| LLM
-    piruntime -->|"MCP 工具调用"| McpExt
-    piruntime -->|"增量输出事件"| Redis
-    piruntime -->|"更新会话状态\n存储历史消息"| mongo
     Bwrap -.->|"共享挂载"| NFS
     SkillFS -.->|"共享挂载"| NFS
 
+    PiAgent -->|"增量输出事件"| Redis
+
+    PiAgent -->|"更新会话状态\n存储历史消息\n读取 MCP 配置"| mongo
+
+    piruntime -->|"LLM 推理"| LLM
+    McpAdapter -->|"MCP 调用"| McpExt
+
     style mid fill:none,stroke:none
     style row_api fill:none,stroke:none
+    style Gap fill:none,stroke:none,color:transparent
 ```
 
 ---
