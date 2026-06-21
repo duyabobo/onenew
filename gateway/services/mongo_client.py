@@ -104,6 +104,59 @@ async def get_sessions_by_conversation(conversation_id: str) -> list[SessionSumm
     ]
 
 
+async def get_recent_conversations(user_id: str, limit: int = 20) -> list[dict]:
+    """
+    按 conversation_id 聚合，返回用户最近的对话列表（一条对话一个条目）。
+    用于侧边栏历史列表，避免同一对话在列表里重复出现多条。
+    """
+    db = get_db()
+    pipeline = [
+        {"$match": {"user_id": user_id, "conversation_id": {"$ne": None}}},
+        {"$sort": {"created_at": 1}},
+        {"$group": {
+            "_id": "$conversation_id",
+            "first_request": {"$first": "$request"},
+            "last_status": {"$last": "$status"},
+            "last_created_at": {"$last": "$created_at"},
+            "session_count": {"$sum": 1},
+        }},
+        {"$sort": {"last_created_at": -1}},
+        {"$limit": limit},
+    ]
+    docs = await db.sessions.aggregate(pipeline).to_list(None)
+    return [
+        {
+            "conversation_id": doc["_id"],
+            "first_request": doc["first_request"],
+            "last_status": doc["last_status"],
+            "last_created_at": doc["last_created_at"],
+            "session_count": doc["session_count"],
+        }
+        for doc in docs
+    ]
+
+
+async def get_conversation_sessions_with_events(conversation_id: str) -> list[dict]:
+    """
+    获取对话内所有 session（含 events_snapshot），按时间升序排列。
+    供前端一次性重建完整消息列表，消除 N+1 请求问题。
+    """
+    db = get_db()
+    cursor = db.sessions.find(
+        {"conversation_id": conversation_id},
+        {"_id": 1, "status": 1, "request": 1, "events_snapshot": 1},
+    ).sort("created_at", 1)
+    return [
+        {
+            "session_id": str(raw["_id"]),
+            "status": raw.get("status", "UNKNOWN"),
+            "request": raw.get("request", ""),
+            "events_snapshot": raw.get("events_snapshot", []),
+        }
+        async for raw in cursor
+    ]
+
+
 async def append_event_snapshot(session_id: str, event: dict[str, Any]) -> None:
     """将 pi-runtime 推送的事件追加到 MongoDB 快照，供断线重连回放"""
     db = get_db()

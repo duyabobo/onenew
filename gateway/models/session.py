@@ -60,3 +60,20 @@ class SessionStreamEvent(BaseModel):
     event_type: str  # token | tool_call | tool_result | done | error
     content: str
     seq: int
+
+
+class ConversationSummary(BaseModel):
+    """对话维度摘要（按 conversation_id 聚合），用于历史侧边栏"""
+    conversation_id: str
+    first_request: str
+    last_status: SessionStatus
+    last_created_at: datetime
+    session_count: int
+
+
+class ConversationSession(BaseModel):
+    """含 events_snapshot 的 session，用于一次性重建对话消息列表"""
+    session_id: str
+    status: SessionStatus
+    request: str
+    events_snapshot: list[dict[str, Any]] = Field(default_factory=list)

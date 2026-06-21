@@ -20,6 +20,23 @@ export interface SessionDetail {
   created_at: string;
 }
 
+/** 对话维度的摘要，一条对话一个条目（用于侧边栏历史列表） */
+export interface ConversationSummary {
+  conversation_id: string;
+  first_request: string;     // 该对话第一条消息，作为标题
+  last_status: string;       // 最近一次 session 的状态
+  last_created_at: string;
+  session_count: number;     // 共经历几轮问答
+}
+
+/** 包含 events_snapshot 的 session，用于重建对话消息列表 */
+export interface ConversationSession {
+  session_id: string;
+  status: string;
+  request: string;
+  events_snapshot: Array<{ event_type: string; content: string }>;
+}
+
 export async function getRecentSessions(userId: string, limit = 20): Promise<SessionSummary[]> {
   const resp = await fetch(`/sessions?user_id=${encodeURIComponent(userId)}&limit=${limit}`);
   if (!resp.ok) return [];
@@ -66,6 +83,23 @@ export async function createSession(
 /** 获取某对话的所有 session（按时间升序，用于重建消息列表） */
 export async function getConversationSessions(conversationId: string): Promise<SessionSummary[]> {
   const resp = await fetch(`/sessions?conversation_id=${encodeURIComponent(conversationId)}`);
+  if (!resp.ok) return [];
+  return resp.json();
+}
+
+/** 获取用户最近的对话列表（按对话维度聚合，一条对话一个条目） */
+export async function getRecentConversations(userId: string, limit = 20): Promise<ConversationSummary[]> {
+  const resp = await fetch(`/conversations?user_id=${encodeURIComponent(userId)}&limit=${limit}`);
+  if (!resp.ok) return [];
+  return resp.json();
+}
+
+/**
+ * 获取某对话的所有 session（含 events_snapshot），用于一次性重建完整消息列表。
+ * 相比 getConversationSessions + 逐条 getSessionDetail，消除了 N+1 请求问题。
+ */
+export async function getConversationMessages(conversationId: string): Promise<ConversationSession[]> {
+  const resp = await fetch(`/conversations/${encodeURIComponent(conversationId)}`);
   if (!resp.ok) return [];
   return resp.json();
 }

@@ -2,8 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   createSession, streamSession,
-  getRecentSessions, getSessionDetail, getConversationSessions,
-  SessionSummary,
+  getRecentConversations, getConversationMessages,
+  ConversationSummary,
 } from "../api/session";
 import { skillsApi, Skill } from "../api/skills";
 
@@ -167,7 +167,7 @@ export default function ChatPage() {
   const [error, setError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillId, setSelectedSkillId] = useState<string>("");
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
   // conversationId 是对话线程的唯一标识，存在 URL ?c= 参数中
@@ -189,28 +189,28 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  /** 从 URL 中的 conversationId 恢复对话历史 */
+  /**
+   * 从 URL 中的 conversationId 恢复对话历史。
+   * 单次请求获取所有 session（含 events_snapshot），消除 N+1 问题。
+   */
   const loadConversation = useCallback(async (conversationId: string) => {
-    const sessionList = await getConversationSessions(conversationId);
-    if (sessionList.length === 0) return;
+    const sessions = await getConversationMessages(conversationId);
+    if (sessions.length === 0) return;
 
     const allMessages: Message[] = [];
-    for (const s of sessionList) {
+    for (const s of sessions) {
       if (s.status === "COMPLETED" || s.status === "FAILED") {
-        const detail = await getSessionDetail(s.session_id);
-        if (detail) {
-          allMessages.push(...buildMessagesFromSnapshot(detail.request, detail.events_snapshot));
-        }
+        allMessages.push(...buildMessagesFromSnapshot(s.request, s.events_snapshot));
       }
     }
     if (allMessages.length > 0) setMessages(allMessages);
   }, []);
 
-  const loadHistory = useCallback(async (uid: string) => {
-    if (!uid.trim()) { setSessions([]); return; }
-    const list = await getRecentSessions(uid);
-    setSessions(list);
-    return list;
+  /** 加载用户对话列表（conversation 维度，一条对话一个条目） */
+  const loadConversations = useCallback(async (uid: string) => {
+    if (!uid.trim()) { setConversations([]); return; }
+    const list = await getRecentConversations(uid);
+    setConversations(list);
   }, []);
 
   // 页面挂载：优先从 URL 恢复对话，其次加载用户历史
@@ -220,23 +220,17 @@ export default function ChatPage() {
       conversationIdRef.current = convId;
       loadConversation(convId);
     } else if (userId.trim()) {
-      loadHistory(userId);
+      loadConversations(userId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadSessionMessages = useCallback(async (s: SessionSummary) => {
-    if (s.conversation_id) {
-      // 点击历史 session，加载整个对话线程
-      conversationIdRef.current = s.conversation_id;
-      setSearchParams({ c: s.conversation_id });
-      await loadConversation(s.conversation_id);
-    } else {
-      // 旧数据无 conversation_id，只加载这条 session
-      const detail = await getSessionDetail(s.session_id);
-      if (!detail) return;
-      setMessages(buildMessagesFromSnapshot(detail.request, detail.events_snapshot));
-    }
+  /** 点击侧边栏对话条目，切换并加载该对话的完整消息 */
+  const switchToConversation = useCallback(async (conversationId: string) => {
+    conversationIdRef.current = conversationId;
+    setSearchParams({ c: conversationId });
+    setMessages([]);
+    await loadConversation(conversationId);
   }, [loadConversation, setSearchParams]);
 
   const appendToLastOfType = useCallback((type: MessageType, text: string) => {
@@ -296,7 +290,8 @@ export default function ChatPage() {
         () => {
           setIsLoading(false);
           markStreamingDone();
-          loadHistory(userId);
+          // 问答完成后刷新对话列表（更新最新活动时间和状态）
+          loadConversations(userId);
         },
         (msg) => { setError(msg); setIsLoading(false); }
       );
@@ -304,7 +299,7 @@ export default function ChatPage() {
       setError(e instanceof Error ? e.message : "请求失败");
       setIsLoading(false);
     }
-  }, [input, userId, isLoading, selectedSkillId, setSearchParams, appendToLastOfType, addDiscreteMessage, markStreamingDone, loadHistory]);
+  }, [input, userId, isLoading, selectedSkillId, setSearchParams, appendToLastOfType, addDiscreteMessage, markStreamingDone, loadConversations]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -315,38 +310,39 @@ export default function ChatPage() {
     setMessages([]);
     conversationIdRef.current = null;
     setSearchParams({});
-    if (newId.trim()) loadHistory(newId);
+    if (newId.trim()) loadConversations(newId);
   };
 
   return (
     <div className="flex h-[calc(100vh-53px)]">
-      {/* 历史会话侧边栏 */}
+      {/* 历史会话侧边栏（conversation 维度，一条对话一个条目） */}
       {showHistory && (
         <div className="w-64 border-r bg-gray-50 flex flex-col shrink-0">
           <div className="px-3 py-2 border-b bg-white flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">历史会话</span>
+            <span className="text-sm font-medium text-gray-700">历史对话</span>
             <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {sessions.length === 0 ? (
-              <p className="text-xs text-gray-400 text-center mt-8 px-3">暂无历史会话</p>
+            {conversations.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center mt-8 px-3">暂无历史对话</p>
             ) : (
-              sessions.map((s) => (
+              conversations.map((conv) => (
                 <button
-                  key={s.session_id}
-                  onClick={() => loadSessionMessages(s)}
+                  key={conv.conversation_id}
+                  onClick={() => switchToConversation(conv.conversation_id)}
                   className={`w-full text-left px-3 py-2 border-b hover:bg-indigo-50 transition-colors ${
-                    s.conversation_id === conversationIdRef.current ? "bg-indigo-50 border-l-2 border-l-indigo-500" : ""
+                    conv.conversation_id === conversationIdRef.current ? "bg-indigo-50 border-l-2 border-l-indigo-500" : ""
                   }`}
                 >
-                  <p className="text-xs text-gray-800 truncate">{s.request}</p>
-                  <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+                  <p className="text-xs text-gray-800 truncate">{conv.first_request}</p>
+                  <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
                     <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                      s.status === "COMPLETED" ? "bg-green-400" :
-                      s.status === "RUNNING" ? "bg-yellow-400 animate-pulse" :
-                      s.status === "FAILED" ? "bg-red-400" : "bg-gray-300"
+                      conv.last_status === "COMPLETED" ? "bg-green-400" :
+                      conv.last_status === "RUNNING" ? "bg-yellow-400 animate-pulse" :
+                      conv.last_status === "FAILED" ? "bg-red-400" : "bg-gray-300"
                     }`} />
-                    {new Date(s.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    <span>{new Date(conv.last_created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                    <span className="text-gray-300">{conv.session_count} 轮</span>
                   </p>
                 </button>
               ))
@@ -359,8 +355,8 @@ export default function ChatPage() {
       <div className="flex flex-col flex-1 min-w-0">
         <div className="bg-white border-b px-4 py-2 flex items-center gap-3 flex-wrap">
           <button
-            onClick={() => { setShowHistory((v) => !v); if (!showHistory && userId.trim()) loadHistory(userId); }}
-            title="历史会话"
+            onClick={() => { setShowHistory((v) => !v); if (!showHistory && userId.trim()) loadConversations(userId); }}
+            title="历史对话"
             className="text-gray-400 hover:text-indigo-600 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
