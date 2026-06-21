@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o"
     llm_timeout: int = 120
 
-    # MongoDB（存储 LLM / MCP 配置）
+    # MongoDB（存储 LLM / MCP 配置 + skill 元数据）
     mongo_uri: str = "mongodb://mongo:27017"
     mongo_db: str = "pi_agent"
+
+    # 共享文件系统根目录（global/skills/ 放在此处，与 pi-runtime 共享）
+    sandbox_root: str = "/data/sandboxes"
 
     class Config:
         env_file = ".env"

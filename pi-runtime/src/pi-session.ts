@@ -4,7 +4,7 @@ import { mkdir, writeFile, rm } from "fs/promises";
 import { join } from "path";
 import { SandboxPaths } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
-import { getMcpConfig, getSkillsByNames } from "./mongo-client";
+import { getMcpConfig } from "./mongo-client";
 
 // Pi RPC 消息类型（根据 pi docs/rpc.md）
 interface PiRpcMessage {
@@ -44,14 +44,36 @@ type PiEvent = PiTextEvent | PiToolCallEvent | PiToolResultEvent | PiDoneEvent;
  * 为每个 session 创建独立的 pi config 目录，写入从 MongoDB 读取的 MCP 配置。
  * 通过 PI_CODING_AGENT_DIR 环境变量让 pi 使用该目录，避免多 session 共用 ~/.pi/agent。
  */
-async function setupPiConfigDir(sessionId: string): Promise<string> {
+async function setupPiConfigDir(
+  sessionId: string,
+  globalSkillsRoot: string,
+  userSkillsRoot: string
+): Promise<string> {
   const piConfigDir = `/tmp/pi-config/${sessionId}`;
   await mkdir(piConfigDir, { recursive: true });
 
+  // MCP 配置（从 MongoDB 读取）
   const mcpConfig = await getMcpConfig();
-  // 将 MongoDB 中的 MCP 配置转换为 pi-mcp-adapter 期望的 mcpServers 格式
   const piMcpJson = { mcpServers: mcpConfig.servers };
   await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify(piMcpJson, null, 2));
+
+  // Skills 目录：合并 global + user 专属 skill，pi 从此处自动发现（无用户选定时）
+  // 通过软链接指向真实目录，避免文件复制
+  const piSkillsDir = join(piConfigDir, "skills");
+  await mkdir(piSkillsDir, { recursive: true });
+
+  // 将 global skills 和 user skills 软链接到 pi config skills 目录
+  const { symlink, readdir } = await import("fs/promises");
+
+  for (const [srcRoot, prefix] of [[globalSkillsRoot, "g"], [userSkillsRoot, "u"]] as const) {
+    const entries = await readdir(srcRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // 命名加前缀避免 global 和 user skill 同名冲突
+      const linkName = join(piSkillsDir, `${prefix}_${entry.name}`);
+      await symlink(join(srcRoot, entry.name), linkName).catch(() => {});
+    }
+  }
 
   console.log(`[pi-session] session=${sessionId}: pi config 目录就绪 ${piConfigDir}`);
   return piConfigDir;
@@ -62,18 +84,32 @@ async function cleanupPiConfigDir(sessionId: string): Promise<void> {
 }
 
 /**
- * 将用户选定的 skill content 拼接为 system prompt。
- * 跳过渐进式披露——用户已明确选择，直接注入全量内容。
+ * 构建传给 pi 的 --skill 参数列表。
+ *
+ * 用户选定 skill 时：
+ *   只传选定的 skill 目录路径（global + user）。
+ *   pi 使用 --no-skills（关闭全量扫描）+ --skill {path}（只加载指定的）。
+ *   pi 对这些 skill 依然执行渐进式披露（tier 1 description → tier 2 正文 → tier 3 资源）。
+ *
+ * 用户未选 skill 时：
+ *   不传 --skill 参数，pi 自动扫描 PI_CODING_AGENT_DIR/skills/（全局 + 用户专属）。
  */
-async function buildSystemPrompt(skillIds: string[]): Promise<string> {
-  if (skillIds.length === 0) return "";
-  const skills = await getSkillsByNames(skillIds);
-  if (skills.length === 0) return "";
+function buildSkillArgs(
+  skillIds: string[],
+  globalSkillsRoot: string,
+  userSkillsRoot: string
+): string[] {
+  if (skillIds.length === 0) return [];
 
-  const parts = skills.map((s) => `# Skill: ${s.name}\n\n${s.content}`);
-  const systemPrompt = parts.join("\n\n---\n\n");
-  console.log(`[pi-session] 注入 ${skills.length} 个 skill: ${skills.map((s) => s.name).join(", ")}`);
-  return systemPrompt;
+  const args: string[] = ["--no-skills"];
+  for (const id of skillIds) {
+    const globalPath = join(globalSkillsRoot, id);
+    const userPath = join(userSkillsRoot, id);
+    // 优先 global skill，再找用户专属 skill
+    args.push("--skill", globalPath);
+    args.push("--skill", userPath);
+  }
+  return args;
 }
 
 export async function runPiSession(
@@ -83,30 +119,38 @@ export async function runPiSession(
   outputStream: SessionOutputStream,
   skillIds: string[] = []
 ): Promise<void> {
-  const piConfigDir = await setupPiConfigDir(sessionId);
+  const piConfigDir = await setupPiConfigDir(
+    sessionId,
+    sandboxPaths.globalSkills,
+    sandboxPaths.userSkills
+  );
 
   return new Promise((resolve, reject) => {
     const piEnv = {
       ...process.env,
-      // 注入实际路径到 bwrap 扩展（路径内外一致）
       PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
       PI_SANDBOX_HOME: sandboxPaths.home,
       PI_SANDBOX_TMP: sandboxPaths.sessionTmp,
-      // LLM 指向 admin 服务
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://admin:9000/v1",
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
-      // 每个 session 独立的 pi config 目录（含 MCP 配置），避免多 session 互相干扰
       PI_CODING_AGENT_DIR: piConfigDir,
     };
 
-    // 以 RPC 模式启动 pi，关闭 session 持久化（每个 session 独立临时会话）
-    // bwrap 沙盒扩展已安装在 /root/.pi/agent/extensions/，pi 自动加载
+    // 用户选定 skill 时：--no-skills + --skill {path}（仅加载选定的）
+    // 用户未选时：pi 自动扫描 PI_CODING_AGENT_DIR/skills/（全量渐进式披露）
+    const skillArgs = buildSkillArgs(
+      skillIds,
+      sandboxPaths.globalSkills,
+      sandboxPaths.userSkills
+    );
+
     const piProcess: ChildProcess = spawn(
       "pi",
       [
         "--mode", "rpc",
         "--no-session",
         "--provider", "openai",
+        ...skillArgs,
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
@@ -151,11 +195,8 @@ export async function runPiSession(
       reject(err);
     });
 
-    // 构建 system prompt（用户明确选定的 skill，直接注入，跳过 pi 渐进式披露选择）
-    const systemPrompt = await buildSystemPrompt(skillIds);
-    const promptPayload: Record<string, string> = { type: "prompt", text: request };
-    if (systemPrompt) promptPayload.system = systemPrompt;
-
+    // 直接发送用户 prompt，skill 由 pi 原生渐进式披露机制处理
+    const promptPayload = { type: "prompt", text: request };
     piProcess.stdin!.write(JSON.stringify(promptPayload) + "\n");
   });
 }

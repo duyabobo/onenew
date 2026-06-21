@@ -22,22 +22,14 @@ class McpConfig(BaseModel):
     servers: dict[str, McpServerConfig] = {}
 
 
-class SkillDoc(BaseModel):
+class SkillMeta(BaseModel):
     """
-    单个 Skill 文档。
-
-    content 遵循 SKILL.md 标准：
-      ---
-      name: python-expert
-      description: 当用户需要写 Python 代码时使用
-      ---
-      （skill 正文指令，注入 pi 的 system prompt）
-
-    description 字段同时用于前端展示和（如果启用 pi 自动发现时的）pi 激活判断。
+    MongoDB 中只存储 Skill 的元数据（供前端下拉查询，不含正文内容）。
+    Skill 正文（SKILL.md）存储在文件系统 /data/sandboxes/global/skills/{name}/SKILL.md。
+    pi 直接读取文件系统，实现原生渐进式披露。
     """
     name: str
     description: str
-    content: str
     tags: list[str] = []
     hidden: bool = False
     created_at: datetime = None  # type: ignore[assignment]
@@ -49,3 +41,11 @@ class SkillDoc(BaseModel):
             self.created_at = now
         if self.updated_at is None:
             self.updated_at = now
+
+
+class SkillCreateRequest(BaseModel):
+    """创建/更新 Skill 时的请求体（含 content，用于写入文件系统）"""
+    description: str
+    content: str                  # 完整 SKILL.md 正文（frontmatter 由 admin 自动生成）
+    tags: list[str] = []
+    hidden: bool = False

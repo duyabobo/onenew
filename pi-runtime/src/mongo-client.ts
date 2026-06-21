@@ -83,26 +83,5 @@ export async function getMcpConfig(): Promise<McpConfig> {
   return rest as McpConfig;
 }
 
-// ── Skill 读取 ───────────────────────────────────────────────────────────────
-
-export interface SkillDoc {
-  name: string;
-  description: string;
-  content: string;
-  tags?: string[];
-}
-
-/**
- * 按 name 批量获取 skill（含 content），供 pi-session 注入 system prompt 使用。
- * 空列表直接返回空数组，不查 DB。
- */
-export async function getSkillsByNames(names: string[]): Promise<SkillDoc[]> {
-  if (names.length === 0) return [];
-  const cursor = getDb().collection("skills").find({ name: { $in: names } });
-  const docs: SkillDoc[] = [];
-  for await (const raw of cursor) {
-    const { _id: _omit, ...rest } = raw;
-    docs.push(rest as SkillDoc);
-  }
-  return docs;
-}
+// Skill 由文件系统管理（/data/sandboxes/global/skills/ 和 users/{uid}/skills/）
+// pi-runtime 直接使用文件路径，不再从 MongoDB 读取 skill 内容

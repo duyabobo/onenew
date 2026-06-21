@@ -36,10 +36,17 @@ services:
     environment:
       ADMIN_HOST: "0.0.0.0"
       ADMIN_PORT: "9000"
+      SANDBOX_ROOT: "/data/sandboxes"
     ports:
       - "9000:9000"
+    volumes:
+      # admin 需要写 global skills 到共享文件系统
+      - sandbox_workspaces:/data/sandboxes
     networks:
       - pi_net
+    depends_on:
+      mongo:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 10s
@@ -101,9 +108,10 @@ services:
     # bwrap 需要 user namespace，privileged 模式提供必要的内核能力
     privileged: true
     volumes:
-      # 持久化卷：每个 user 的 workspace/home 跨 session 保留
-      # 存储文件系统、Python venv、pip 包、.bashrc 等环境
-      - sandbox_workspaces:/data/sandboxes/users
+      # 共享持久化卷，完整挂载 /data/sandboxes 根目录：
+      #   users/{uid}/workspace/  home/  skills/  sessions/ 
+      #   global/skills/  ← admin 写入的全局 skill
+      - sandbox_workspaces:/data/sandboxes
     networks:
       - pi_net
     depends_on:

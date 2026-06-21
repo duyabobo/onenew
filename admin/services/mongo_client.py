@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from config import settings
 from datetime import datetime
-from models.config import LlmConfig, McpConfig, SkillDoc
+from models.config import LlmConfig, McpConfig, SkillMeta
 
 logger = logging.getLogger(__name__)
 
@@ -73,47 +73,31 @@ async def save_mcp_config(cfg: McpConfig) -> None:
 _SKILL_COLLECTION = "skills"
 
 
-async def list_skills() -> list[SkillDoc]:
-    cursor = get_db()[_SKILL_COLLECTION].find({}, {"content": 0})
+async def list_skill_metas() -> list[SkillMeta]:
+    """列出所有 skill 元数据（不含正文，内容在文件系统）"""
+    cursor = get_db()[_SKILL_COLLECTION].find({})
     docs = []
     async for raw in cursor:
         raw.pop("_id", None)
-        docs.append(SkillDoc(**raw))
+        docs.append(SkillMeta(**raw))
     return docs
 
 
-async def get_skill(name: str) -> SkillDoc | None:
-    raw = await get_db()[_SKILL_COLLECTION].find_one({"name": name})
-    if not raw:
-        return None
-    raw.pop("_id", None)
-    return SkillDoc(**raw)
-
-
-async def get_skills_by_names(names: list[str]) -> list[SkillDoc]:
-    """批量获取指定 skill（含 content），供 pi-runtime 注入 system prompt 使用"""
-    cursor = get_db()[_SKILL_COLLECTION].find({"name": {"$in": names}})
-    docs = []
-    async for raw in cursor:
-        raw.pop("_id", None)
-        docs.append(SkillDoc(**raw))
-    return docs
-
-
-async def save_skill(doc: SkillDoc) -> SkillDoc:
-    doc.updated_at = datetime.utcnow()
+async def save_skill_meta(meta: SkillMeta) -> SkillMeta:
+    """保存/更新 skill 元数据到 MongoDB"""
+    meta.updated_at = datetime.utcnow()
     await get_db()[_SKILL_COLLECTION].update_one(
-        {"name": doc.name},
-        {"$set": doc.model_dump(), "$setOnInsert": {"created_at": doc.created_at}},
+        {"name": meta.name},
+        {"$set": meta.model_dump(), "$setOnInsert": {"created_at": meta.created_at}},
         upsert=True,
     )
-    logger.info("skill 已保存: %s", doc.name)
-    return doc
+    logger.info("skill 元数据已保存: %s", meta.name)
+    return meta
 
 
-async def delete_skill(name: str) -> bool:
+async def delete_skill_meta(name: str) -> bool:
     result = await get_db()[_SKILL_COLLECTION].delete_one({"name": name})
     if result.deleted_count:
-        logger.info("skill 已删除: %s", name)
+        logger.info("skill 元数据已删除: %s", name)
         return True
     return False

@@ -26,6 +26,10 @@ export interface SandboxPaths {
   workspace: string;
   home: string;
   sessionTmp: string;
+  /** 用户专属 skill 目录（持久化，跨 session，用户级别隔离） */
+  userSkills: string;
+  /** 全局 skill 目录（admin 管理，所有用户只读可用） */
+  globalSkills: string;
 }
 
 function buildSessionRoot(userId: string, sessionId: string): string {
@@ -42,9 +46,16 @@ export async function createSandbox(userId: string, sessionId: string): Promise<
   const home = join(sessionRoot, "home");
   const sessionTmp = join(sessionRoot, "tmp");
 
+  // user 专属 skill 目录（持久化，user 级别隔离，不随 session 销毁）
+  const userSkills = join(config.sandbox.root, "users", userId, "skills");
+  // 全局 skill 目录（admin 写入，所有用户只读可用）
+  const globalSkills = join(config.sandbox.root, "global", "skills");
+
   await mkdir(workspace, { recursive: true });
   await mkdir(home, { recursive: true });
   await mkdir(sessionTmp, { recursive: true });
+  await mkdir(userSkills, { recursive: true });
+  await mkdir(globalSkills, { recursive: true });
 
   // 初始化 home 环境（每个 session 独立）
   await writeFile(
@@ -59,7 +70,7 @@ export async function createSandbox(userId: string, sessionId: string): Promise<
   );
 
   console.log(`[sandbox] session=${sessionId} user=${userId}: 沙盒创建完成 root=${sessionRoot}`);
-  return { workspace, home, sessionTmp };
+  return { workspace, home, sessionTmp, userSkills, globalSkills };
 }
 
 /**
