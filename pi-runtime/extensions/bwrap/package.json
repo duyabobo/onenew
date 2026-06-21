@@ -1,0 +1,7 @@
+{
+  "name": "pi-bwrap-sandbox",
+  "version": "1.0.0",
+  "description": "Pi extension: route bash tool calls into bwrap sandbox",
+  "main": "index.ts",
+  "type": "module"
+}

@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - pi_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - pi_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ADMIN_HOST: "0.0.0.0"
+      ADMIN_PORT: "9000"
+    ports:
+      - "9000:9000"
+    networks:
+      - pi_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "8000"
+    ports:
+      - "8000:8000"
+    networks:
+      - pi_net
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pi-runtime:
+    build:
+      context: ./pi-runtime
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OPENAI_BASE_URL: "http://admin:9000/v1"
+      OPENAI_API_KEY: "pi-agent-internal"
+      SANDBOX_ROOT: "/tmp/pi-sandbox"
+    # bwrap 需要 user namespace，privileged 模式提供必要的内核能力
+    privileged: true
+    volumes:
+      - sandbox_tmp:/tmp/pi-sandbox
+    networks:
+      - pi_net
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+
+volumes:
+  mongo_data:
+  redis_data:
+  sandbox_tmp:
+
+networks:
+  pi_net:
+    driver: bridge
