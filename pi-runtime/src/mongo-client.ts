@@ -1,4 +1,4 @@
-import { MongoClient, Db } from "mongodb";
+import { MongoClient, Db, Filter, Document } from "mongodb";
 import { config } from "./config";
 
 const SESSION_STATUS = {
@@ -45,7 +45,7 @@ export async function updateSessionStatus(
 
   await getDb()
     .collection("sessions")
-    .updateOne({ _id: sessionId as unknown }, { $set: update });
+    .updateOne({ _id: sessionId } as unknown as Filter<Document>, { $set: update });
 
   console.log(`[mongo] session ${sessionId} 状态更新 -> ${status}`);
 }
@@ -57,8 +57,8 @@ export async function appendEventSnapshot(
   await getDb()
     .collection("sessions")
     .updateOne(
-      { _id: sessionId as unknown },
-      { $push: { events_snapshot: event } as unknown }
+      { _id: sessionId } as unknown as Filter<Document>,
+      { $push: { events_snapshot: event } } as unknown as Filter<Document>
     );
 }
 
@@ -77,7 +77,7 @@ export interface McpConfig {
 }
 
 export async function getMcpConfig(): Promise<McpConfig> {
-  const raw = await getDb().collection("configs").findOne({ _id: "mcp" as unknown });
+  const raw = await getDb().collection("configs").findOne({ _id: "mcp" } as unknown as Filter<Document>);
   if (!raw) return { servers: {} };
   const { _id: _omit, ...rest } = raw;
   return rest as McpConfig;
