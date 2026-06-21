@@ -71,65 +71,6 @@ flowchart LR
 
 ---
 
-## MongoDB 存储职责
-
-| 集合 | 写入方 | 读取方 | 内容 |
-|------|--------|--------|------|
-| `sessions` | gateway（创建）/ pi-runtime（更新状态）| gateway（SSE 回放快照）| 会话文档、事件快照、状态 |
-| `configs` | admin（LLM / MCP 配置）| admin（LLM 代理读内存缓存）/ pi-runtime（MCP 配置）| LLM Provider 配置、MCP Server 配置 |
-| `skills` | admin（元数据）| gateway（下拉列表）| Skill 名称、描述、标签（不含正文）|
-
-> Skill **正文内容**存储在文件系统（`/data/sandboxes/global/skills/{name}/SKILL.md`），不在 MongoDB 中。pi 原生渐进式披露直接读文件。
-
----
-
-## MCP Server 管理关系
-
-MCP Server 是**完全外部、与本项目解耦**的业务工具服务，由各业务方自行开发和部署。
-
-```
-业务方自行部署 MCP Server（任意语言、任意位置）
-  ↓ 向 Admin 注册 endpoint
-Admin 页配置 MCP Server（POST /config/mcp）
-  → 写 MongoDB configs.mcp（存储 name / url / transport 等元数据）
-
-  ↓ session 启动时
-pi-runtime 读 MongoDB configs.mcp
-  → 写 /tmp/pi-config/{session_id}/mcp.json
-  → pi-mcp-adapter（MCP Client）加载配置
-  → 用户 prompt 触发工具调用时，pi-mcp-adapter 通过 HTTP/SSE 连接 MCP Server
-  → 工具调用完成，连接空闲超时自动断开
-```
-
-**本项目只实现 MCP Client 侧**（pi-mcp-adapter 插件），不包含任何 MCP Server 代码。新增工具能力只需部署新的 MCP Server 并在 Admin 注册，无需改动本项目。
-
----
-
-## Skill 文件系统结构
-
-```
-/data/sandboxes/                    ← 共享持久化卷（admin + pi-runtime 共同挂载）
-  global/skills/                    ← admin 管理的全局 skill（所有用户可用）
-    python-expert/
-      SKILL.md                      ← frontmatter(name/description) + 正文
-    data-analysis/
-      SKILL.md
-      scripts/analyze.py            ← Skill tier 3：按需加载的脚本
-  users/{user_id}/skills/           ← 用户专属 skill（user 级别隔离，持久化）
-    custom-workflow/
-      SKILL.md
-
-session 启动时：
-  PI_CODING_AGENT_DIR/skills/
-    g_python-expert → symlink → global/skills/python-expert/
-    u_custom-workflow → symlink → users/{uid}/skills/custom-workflow/
-  
-  用户选定 skill："--no-skills --skill {path}"（只加载选定的）
-  用户未选定："pi 自动扫描 skills/ 目录"（全量渐进式披露）
-```
-
----
-
 ## 关键请求链路
 
 ### 会话创建
@@ -172,12 +113,13 @@ pi-runtime SUBSCRIBE sessions:new
 
 | 服务 | 端口 | 技术栈 | 职责 |
 |------|------|--------|------|
-| **frontend** | 3000 | React + Vite + Tailwind | 对话界面 + 管理页面（LLM/MCP/Skill 配置）|
-| **gateway** | 8000 | Python FastAPI | 会话 CRUD、SSE 流、Skill 元数据列表 |
-| **admin** | 9000 | Python FastAPI | LLM 代理、LLM/MCP/Skill 配置管理、写 SKILL.md 文件 |
-| **pi-runtime** | — | Node.js + Pi Agent | Agent 执行、bwrap 沙盒、MCP Server 管理 |
-| **redis** | 6379 | Redis 7 | 任务 Pub/Sub + 输出 Stream |
-| **mongo** | 27017 | MongoDB 7 | sessions、configs（LLM/MCP）、skills 元数据 |
+| **frontend** | 3000 | React + Vite + Tailwind | 对话界面、LLM / MCP / Skill 配置管理页 |
+| **gateway** | 8000 | Python FastAPI | 会话 CRUD、SSE 流式输出、Skill 元数据列表 |
+| **admin** | 9000 | Python FastAPI | MCP Server 配置、Skill 管理（元数据 + 文件）|
+| **llm-proxy** | 9001 | Python FastAPI | LLM 代理（OpenAI 兼容）、Provider 配置热更新 |
+| **pi-runtime** | — | Node.js + Pi Agent | Agent 任务执行、bwrap 沙盒隔离、MCP 工具调用 |
+| **redis** | 6379 | Redis 7 | 会话任务 Pub/Sub + 增量输出 Stream |
+| **mongo** | 27017 | MongoDB 7 | 会话状态、LLM / MCP 配置、Skill 元数据 |
 
 ---
 
