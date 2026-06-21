@@ -59,6 +59,7 @@ declare const pi: PiContext;
  * 关键：这里是实际文件系统路径（非 /workspace 别名），
  * 确保 pi 的 read/write/edit 工具（Node.js）和 bash 工具（bwrap）访问同一路径。
  */
+const sandboxRoot = process.env.PI_SANDBOX_ROOT ?? "/data/sandboxes";
 const sandboxWorkspace = process.env.PI_SANDBOX_WORKSPACE ?? "";
 const sandboxHome = process.env.PI_SANDBOX_HOME ?? "";
 const sandboxTmp = process.env.PI_SANDBOX_TMP ?? "";
@@ -71,7 +72,9 @@ function buildBwrapArgs(cmd: string): string[] {
   return [
     // 根文件系统只读（提供系统工具、Python 等运行时）
     "--ro-bind", "/", "/",
-    // 覆盖：workspace 和 home 可读写，路径内外一致（不使用别名）
+    // 用空 tmpfs 覆盖整个 sandbox 根目录，隐藏其他所有 session/user 的数据，防止跨 session 读取
+    "--tmpfs", sandboxRoot,
+    // 只将当前 session 的目录 bind 回来（可读写），路径内外一致
     "--bind", sandboxWorkspace, sandboxWorkspace,
     "--bind", sandboxHome, sandboxHome,
     ...(sandboxTmp ? ["--bind", sandboxTmp, sandboxTmp] : ["--tmpfs", "/tmp"]),

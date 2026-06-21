@@ -128,10 +128,11 @@ export async function runPiSession(
   return new Promise((resolve, reject) => {
     const piEnv = {
       ...process.env,
+      PI_SANDBOX_ROOT: process.env.SANDBOX_ROOT ?? "/data/sandboxes",
       PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
       PI_SANDBOX_HOME: sandboxPaths.home,
       PI_SANDBOX_TMP: sandboxPaths.sessionTmp,
-      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://admin:9000/v1",
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://llm-proxy:9001/v1",
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
       PI_CODING_AGENT_DIR: piConfigDir,
     };

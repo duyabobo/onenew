@@ -15,8 +15,8 @@ export const config = {
     root: process.env.SANDBOX_ROOT ?? "/data/sandboxes",
   },
   llm: {
-    // pi 通过 OPENAI_BASE_URL 和 OPENAI_API_KEY 环境变量使用 admin 服务
-    baseUrl: process.env.OPENAI_BASE_URL ?? "http://admin:9000/v1",
+    // pi 通过 OPENAI_BASE_URL 和 OPENAI_API_KEY 环境变量使用 llm-proxy 服务
+    baseUrl: process.env.OPENAI_BASE_URL ?? "http://llm-proxy:9001/v1",
     apiKey: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
   },
   // Pi agent 扩展目录（相对于容器内路径）
