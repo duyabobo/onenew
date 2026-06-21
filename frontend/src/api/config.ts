@@ -3,6 +3,7 @@ export interface LlmConfig {
   api_key: string;
   model: string;
   timeout: number;
+  protocol: "openai" | "anthropic";
 }
 
 export interface McpServerConfig {

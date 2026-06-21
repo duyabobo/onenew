@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import { configApi, LlmConfig } from "../api/config";
 
-const EMPTY: LlmConfig = { base_url: "", api_key: "", model: "", timeout: 120 };
+const EMPTY: LlmConfig = { base_url: "", api_key: "", model: "", timeout: 120, protocol: "openai" };
+
+// 常用服务商预设，方便快速填写
+const PRESETS: Record<string, Partial<LlmConfig>> = {
+  openai:     { protocol: "openai",     base_url: "https://api.openai.com/v1",                              model: "gpt-4o" },
+  anthropic:  { protocol: "anthropic",  base_url: "https://api.anthropic.com",                              model: "claude-opus-4-5-20251101" },
+  dashscope:  { protocol: "openai",     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",      model: "qwen-max" },
+  deepseek:   { protocol: "openai",     base_url: "https://api.deepseek.com/v1",                            model: "deepseek-chat" },
+  groq:       { protocol: "openai",     base_url: "https://api.groq.com/openai/v1",                         model: "llama-3.3-70b-versatile" },
+};
 
 export default function LlmConfigPanel() {
   const [form, setForm] = useState<LlmConfig>(EMPTY);
@@ -22,7 +31,7 @@ export default function LlmConfigPanel() {
     setMsg(null);
     try {
       await configApi.saveLlm(form);
-      setMsg({ type: "ok", text: "保存成功。Admin 服务需重启后生效。" });
+      setMsg({ type: "ok", text: "保存成功，立即生效（llm-proxy 热更新无需重启）。" });
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "保存失败" });
     } finally {
@@ -34,16 +43,39 @@ export default function LlmConfigPanel() {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        配置保存到 MongoDB 后，Admin 服务需重启才能使用新配置。
-      </p>
+      {/* 快速选择服务商预设 */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">快速选择服务商</label>
+        <div className="flex gap-2 flex-wrap">
+          {Object.entries(PRESETS).map(([key, preset]) => (
+            <button
+              key={key}
+              onClick={() => setForm((f) => ({ ...f, ...preset }))}
+              className="text-xs px-3 py-1 border border-gray-300 rounded-full hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-700 transition-colors"
+            >
+              {key}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      <Field label="Base URL" placeholder="https://api.openai.com/v1">
+      <Field label="协议">
+        <select
+          value={form.protocol}
+          onChange={(e) => setForm({ ...form, protocol: e.target.value as LlmConfig["protocol"] })}
+          className={inputCls}
+        >
+          <option value="openai">OpenAI-compatible（OpenAI / 百炼 / DeepSeek / Groq 等）</option>
+          <option value="anthropic">Anthropic Messages API（Claude 原生协议）</option>
+        </select>
+      </Field>
+
+      <Field label="Base URL">
         <input
           type="url"
           value={form.base_url}
           onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-          placeholder="https://api.openai.com/v1"
+          placeholder={form.protocol === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1"}
           className={inputCls}
         />
       </Field>
@@ -54,7 +86,7 @@ export default function LlmConfigPanel() {
             type={showKey ? "text" : "password"}
             value={form.api_key}
             onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-            placeholder="sk-..."
+            placeholder={form.protocol === "anthropic" ? "sk-ant-..." : "sk-..."}
             className={`${inputCls} flex-1`}
           />
           <button
@@ -66,11 +98,11 @@ export default function LlmConfigPanel() {
         </div>
       </Field>
 
-      <Field label="默认模型">
+      <Field label="模型">
         <input
           value={form.model}
           onChange={(e) => setForm({ ...form, model: e.target.value })}
-          placeholder="gpt-4o / claude-opus-4-5"
+          placeholder={form.protocol === "anthropic" ? "claude-opus-4-5-20251101" : "gpt-4o"}
           className={inputCls}
         />
       </Field>
