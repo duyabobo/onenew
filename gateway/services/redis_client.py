@@ -109,6 +109,9 @@ async def stream_session_output(
     client = get_redis()
     stream_key = _get_stream_key(session_id)
     last_id = start_seq
+    heartbeat_count = 0
+
+    logger.info("开始读取 Redis Stream: key=%s start_seq=%s", stream_key, start_seq)
 
     while True:
         results = await client.xread(
@@ -117,13 +120,27 @@ async def stream_session_output(
             count=50,
         )
         if not results:
+            heartbeat_count += 1
+            # 每隔 10 次心跳（约 10 * sse_block_ms）打一次日志，避免刷屏
+            if heartbeat_count % 10 == 1:
+                logger.debug("session %s: 等待 Redis Stream 中（心跳 #%d，last_id=%s）",
+                             session_id, heartbeat_count, last_id)
             yield {"heartbeat": True}
             continue
 
         for _key, messages in results:
+            batch_size = len(messages)
+            logger.debug("session %s: 读取到 %d 条消息（last_id=%s）", session_id, batch_size, last_id)
+
             for msg_id, fields in messages:
                 last_id = msg_id
+                event_type = fields.get("event_type", "unknown")
+
+                if event_type in ("done", "error"):
+                    logger.info("session %s: Redis Stream 终止事件 event_type=%s msg_id=%s",
+                                session_id, event_type, msg_id)
+
                 yield {"id": msg_id, **fields}
 
-                if fields.get("event_type") == "done":
+                if event_type == "done":
                     return

@@ -17,6 +17,7 @@ export interface OutputEvent {
 
 export class SessionOutputStream {
   private readonly streamKey: string;
+  private pushCount = 0;
 
   constructor(
     private readonly redis: Redis,
@@ -26,7 +27,7 @@ export class SessionOutputStream {
   }
 
   async push(event: OutputEvent): Promise<void> {
-    await this.redis.xadd(
+    const msgId = await this.redis.xadd(
       this.streamKey,
       "*",
       "event_type",
@@ -34,11 +35,16 @@ export class SessionOutputStream {
       "content",
       event.content
     );
+    this.pushCount++;
+    // 第一条写入时打日志，方便确认 Stream 已开始工作
+    if (this.pushCount === 1) {
+      console.log(`[stream] session ${this.sessionId}: 首条事件写入 Redis Stream key=${this.streamKey} msg_id=${msgId} event_type=${event.event_type}`);
+    }
   }
 
   async pushDone(): Promise<void> {
     await this.push({ event_type: "done", content: "" });
-    console.log(`[stream] session ${this.sessionId}: done 事件已推送`);
+    console.log(`[stream] session ${this.sessionId}: done 事件已推送，累计 ${this.pushCount} 条`);
   }
 
   async pushError(message: string): Promise<void> {
@@ -49,6 +55,7 @@ export class SessionOutputStream {
   // 设置 Stream 自动过期（任务完成后 1 小时清理）
   async expire(seconds: number = 3600): Promise<void> {
     await this.redis.expire(this.streamKey, seconds);
+    console.log(`[stream] session ${this.sessionId}: Stream 已设置过期 TTL=${seconds}s`);
   }
 }
 

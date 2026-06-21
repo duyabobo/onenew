@@ -24,8 +24,15 @@ async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResp
         return CreateSessionResponse(session_id=existing.id, status=existing.status)
 
     session_id = str(uuid.uuid4())
+    request_preview = body.request[:80].replace("\n", " ")
+    logger.info("新建 session: session_id=%s user=%s skill_ids=%s request='%s'",
+                session_id, body.user_id, body.skill_ids, request_preview)
+
     await mongo_client.create_session(session_id, body.user_id, body.request, body.skill_ids)
+    logger.info("session 已写入 MongoDB: session_id=%s", session_id)
+
     await redis_client.publish_task(session_id, body.user_id, body.request, body.skill_ids)
+    logger.info("session 任务已发布到 Redis: session_id=%s", session_id)
 
     return CreateSessionResponse(session_id=session_id, status=SessionStatus.PENDING)
 

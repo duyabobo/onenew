@@ -52,25 +52,32 @@ async function processSession(payload: TaskPayload): Promise<void> {
 
   activeSessions.add(session_id);
   const outputStream = new SessionOutputStream(getRedis(), session_id);
+  const startAt = Date.now();
 
   try {
-    console.log(`[worker] 开始处理 session=${session_id} user=${user_id} instance=${INSTANCE_ID}`);
+    const requestPreview = request.slice(0, 80).replace(/\n/g, " ");
+    console.log(`[worker] 开始处理: session=${session_id} user=${user_id} instance=${INSTANCE_ID} skill_ids=[${skill_ids}] request='${requestPreview}'`);
 
     // 认领任务，将 user 绑定到本实例（sticky session 核心）
     await bindUserToInstance(user_id);
     await updateSessionStatus(session_id, "RUNNING");
+    console.log(`[worker] session ${session_id}: 状态已更新为 RUNNING`);
 
     // userId 用于确定持久化 workspace 路径，同一 user 跨 session 复用
     const sandboxPaths = await createSandbox(user_id, session_id);
+    console.log(`[worker] session ${session_id}: 沙盒就绪，workspace=${sandboxPaths.workspace}`);
 
+    console.log(`[worker] session ${session_id}: 启动 pi agent...`);
     await runPiSession(session_id, request, sandboxPaths, outputStream, skill_ids);
 
+    const elapsed = Date.now() - startAt;
     await outputStream.expire(3600);
     await updateSessionStatus(session_id, "COMPLETED");
-    console.log(`[worker] session=${session_id} 执行完成`);
+    console.log(`[worker] session ${session_id}: 执行完成，耗时 ${elapsed}ms`);
   } catch (err) {
+    const elapsed = Date.now() - startAt;
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[worker] session=${session_id} 执行失败:`, message);
+    console.error(`[worker] session=${session_id}: 执行失败（耗时 ${elapsed}ms）:`, message);
 
     await outputStream.pushError(message).catch(() => {});
     await outputStream.pushDone().catch(() => {});
@@ -84,7 +91,7 @@ async function processSession(payload: TaskPayload): Promise<void> {
   }
 }
 
-function handleMessage(message: string): void {
+function handleMessage(channel: string, message: string): void {
   let payload: TaskPayload;
   try {
     payload = JSON.parse(message) as TaskPayload;
@@ -92,6 +99,8 @@ function handleMessage(message: string): void {
     console.error("[worker] 无法解析任务消息:", message, err);
     return;
   }
+
+  console.log(`[worker] 收到任务: channel=${channel} session=${payload.session_id} user=${payload.user_id}`);
 
   // 异步处理，不阻塞订阅循环
   processSession(payload).catch((err) =>
@@ -114,7 +123,7 @@ async function startSubscriber(): Promise<Redis> {
 
   subscriber.on("message", (channel, message) => {
     if (channel !== globalChannel && channel !== instanceChannel) return;
-    handleMessage(message);
+    handleMessage(channel, message);
   });
 
   return subscriber;

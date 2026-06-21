@@ -31,6 +31,8 @@ async def pull_session_stream_resp(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session 不存在")
 
+    logger.info("SSE 连接建立: session_id=%s status=%s last_seq=%s", session_id, session.status, last_seq)
+
     async def event_generator():
         # 先发送历史快照（仅首次连接或 last_seq=0 时有意义）
         if last_seq == "0" and session.events_snapshot:
@@ -42,14 +44,18 @@ async def pull_session_stream_resp(
 
         # 如果 session 已终态，直接结束 SSE
         if session.status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
+            logger.info("session %s: 已终态 (%s)，直接返回 done", session_id, session.status)
             yield {"event": "done", "data": json.dumps({"status": session.status})}
             return
+
+        logger.info("session %s: 开始订阅 Redis Stream（start_seq=%s）", session_id, last_seq)
+        event_count = 0
 
         # 持续从 Redis Stream 拉取增量
         async for item in redis_client.stream_session_output(session_id, start_seq=last_seq):
             # 客户端断开时停止
             if await request.is_disconnected():
-                logger.info("session %s: 客户端断开连接", session_id)
+                logger.info("session %s: 客户端断开，累计推送 %d 条事件", session_id, event_count)
                 return
 
             if item.get("heartbeat"):
@@ -57,6 +63,15 @@ async def pull_session_stream_resp(
                 continue
 
             event_type = item.get("event_type", "token")
+            event_count += 1
+
+            if event_type in ("done", "error"):
+                logger.info("session %s: 收到终止事件 event_type=%s，累计推送 %d 条",
+                            session_id, event_type, event_count)
+            elif event_count == 1:
+                logger.info("session %s: 首条事件到达 event_type=%s msg_id=%s",
+                            session_id, event_type, item.get("id"))
+
             yield {
                 "event": event_type,
                 "id": item.get("id"),

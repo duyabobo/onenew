@@ -145,23 +145,20 @@ export async function runPiSession(
       sandboxPaths.userSkills
     );
 
-    const piProcess: ChildProcess = spawn(
-      "pi",
-      [
-        "--mode", "rpc",
-        "--no-session",
-        "--provider", "openai",
-        ...skillArgs,
-      ],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: piEnv,
-        cwd: sandboxPaths.workspace,
-      }
-    );
+    const piArgs = ["--mode", "rpc", "--no-session", "--provider", "openai", ...skillArgs];
+    console.log(`[pi-session] session ${sessionId}: 启动 pi 进程 args=[${piArgs.join(" ")}] cwd=${sandboxPaths.workspace} OPENAI_BASE_URL=${piEnv.OPENAI_BASE_URL}`);
+
+    const piProcess: ChildProcess = spawn("pi", piArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: piEnv,
+      cwd: sandboxPaths.workspace,
+    });
+
+    console.log(`[pi-session] session ${sessionId}: pi 进程已启动 pid=${piProcess.pid}`);
 
     // 逐行解析 pi 的 JSONL 输出
     const rl = createInterface({ input: piProcess.stdout! });
+    let lineCount = 0;
 
     rl.on("line", async (line) => {
       if (!line.trim()) return;
@@ -170,7 +167,16 @@ export async function runPiSession(
         msg = JSON.parse(line) as PiRpcMessage;
       } catch {
         // pi 可能输出非 JSON 的调试信息，忽略
+        console.warn(`[pi-session] session ${sessionId}: 忽略非 JSON 输出: ${line.slice(0, 100)}`);
         return;
+      }
+
+      lineCount++;
+      if (lineCount === 1) {
+        console.log(`[pi-session] session ${sessionId}: 收到 pi 首条消息 type=${msg.type}`);
+      }
+      if (msg.type === "done" || msg.type === "error") {
+        console.log(`[pi-session] session ${sessionId}: pi 终止消息 type=${msg.type} 共 ${lineCount} 条消息`);
       }
 
       await handlePiEvent(msg as unknown as PiEvent, sessionId, outputStream);
@@ -181,17 +187,20 @@ export async function runPiSession(
     });
 
     piProcess.stderr!.on("data", (chunk: Buffer) => {
-      console.error(`[pi-session] session ${sessionId} stderr: ${chunk.toString().trim()}`);
+      const text = chunk.toString().trim();
+      if (text) {
+        console.error(`[pi-session] session ${sessionId} pi stderr: ${text}`);
+      }
     });
 
     piProcess.on("close", async (code) => {
-      console.log(`[pi-session] session ${sessionId}: pi 进程退出，code=${code}`);
+      console.log(`[pi-session] session ${sessionId}: pi 进程退出 code=${code} 累计输出 ${lineCount} 条消息`);
       await cleanupPiConfigDir(sessionId).catch(() => {});
       resolve();
     });
 
     piProcess.on("error", async (err) => {
-      console.error(`[pi-session] session ${sessionId}: pi 进程启动失败:`, err);
+      console.error(`[pi-session] session ${sessionId}: pi 进程启动失败:`, err.message);
       await cleanupPiConfigDir(sessionId).catch(() => {});
       reject(err);
     });
@@ -199,6 +208,7 @@ export async function runPiSession(
     // 直接发送用户 prompt，skill 由 pi 原生渐进式披露机制处理
     const promptPayload = { type: "prompt", text: request };
     piProcess.stdin!.write(JSON.stringify(promptPayload) + "\n");
+    console.log(`[pi-session] session ${sessionId}: prompt 已写入 stdin（${request.length} 字符）`);
   });
 }
 
