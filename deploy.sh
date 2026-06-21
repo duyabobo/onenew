@@ -46,9 +46,9 @@ check_prerequisites() {
   command -v docker compose &>/dev/null || \
     docker compose version &>/dev/null  || error "未找到 docker compose，请升级 Docker"
 
-  # 检查 privileged 支持（pi-runtime bwrap 需要）
-  if ! docker info 2>/dev/null | grep -q "Operating System"; then
-    error "Docker daemon 未运行"
+  # 检查 Docker daemon 是否可用
+  if ! docker ps &>/dev/null; then
+    error "Docker daemon 未运行或无权限访问，请先启动 Docker Desktop"
   fi
 
   success "前置依赖检查通过"
