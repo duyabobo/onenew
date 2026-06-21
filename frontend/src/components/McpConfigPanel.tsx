@@ -2,9 +2,6 @@ import { useEffect, useState } from "react";
 import { configApi, McpConfig, McpServerConfig } from "../api/config";
 
 const EMPTY_SERVER: McpServerConfig = {
-  command: "",
-  args: [],
-  env: {},
   url: "",
   description: "",
   enabled: true,
@@ -97,9 +94,7 @@ export default function McpConfigPanel() {
                 )}
               </div>
               <p className="text-xs text-gray-500 truncate mt-0.5">
-                {cfg.command
-                  ? `${cfg.command} ${(cfg.args ?? []).join(" ")}`
-                  : cfg.url ?? ""}
+                {cfg.url ?? ""}
               </p>
               {cfg.description && (
                 <p className="text-xs text-gray-400 mt-0.5">{cfg.description}</p>
@@ -158,24 +153,6 @@ function ServerEditModal({
   const set = (patch: Partial<McpServerConfig>) =>
     onChange({ ...edit, config: { ...cfg, ...patch } });
 
-  const [argsText, setArgsText] = useState((cfg.args ?? []).join(" "));
-  const [envText, setEnvText] = useState(
-    Object.entries(cfg.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n")
-  );
-
-  const handleSave = () => {
-    set({
-      args: argsText.split(/\s+/).filter(Boolean),
-      env: Object.fromEntries(
-        envText
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => l.split("=", 2) as [string, string])
-      ),
-    });
-    onSave();
-  };
-
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -185,54 +162,31 @@ function ServerEditModal({
           </h2>
         </div>
         <div className="px-6 py-4 space-y-4">
+          <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            仅支持 HTTP/SSE transport（远程 MCP Server）。stdio 本地进程类型因安全原因不被允许。
+          </p>
           <ModalField label="Server 名称">
             <input
               value={name}
               onChange={(e) => onChange({ ...edit, name: e.target.value })}
-              placeholder="filesystem"
+              placeholder="my-mcp-server"
               className={inputCls}
-              disabled={!!edit.name && Object.keys({}).length > 0}
+            />
+          </ModalField>
+          <ModalField label="URL（HTTP/SSE 远程端点）">
+            <input
+              value={cfg.url}
+              onChange={(e) => set({ url: e.target.value })}
+              placeholder="http://mcp-server:8080/sse"
+              className={inputCls}
             />
           </ModalField>
           <ModalField label="描述（可选）">
             <input
               value={cfg.description ?? ""}
               onChange={(e) => set({ description: e.target.value })}
-              placeholder="文件系统工具"
+              placeholder="工具用途说明"
               className={inputCls}
-            />
-          </ModalField>
-          <ModalField label="Command（stdio transport）">
-            <input
-              value={cfg.command ?? ""}
-              onChange={(e) => set({ command: e.target.value })}
-              placeholder="npx"
-              className={inputCls}
-            />
-          </ModalField>
-          <ModalField label="Args（空格分隔）">
-            <input
-              value={argsText}
-              onChange={(e) => setArgsText(e.target.value)}
-              placeholder="-y @modelcontextprotocol/server-filesystem /workspace"
-              className={inputCls}
-            />
-          </ModalField>
-          <ModalField label="URL（HTTP/SSE transport，可选）">
-            <input
-              value={cfg.url ?? ""}
-              onChange={(e) => set({ url: e.target.value })}
-              placeholder="http://mcp-server:8080/sse"
-              className={inputCls}
-            />
-          </ModalField>
-          <ModalField label="环境变量（每行 KEY=VALUE）">
-            <textarea
-              rows={3}
-              value={envText}
-              onChange={(e) => setEnvText(e.target.value)}
-              placeholder={"API_TOKEN=xxx\nDB_URL=mongodb://..."}
-              className={`${inputCls} resize-none`}
             />
           </ModalField>
           <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -253,7 +207,7 @@ function ServerEditModal({
             取消
           </button>
           <button
-            onClick={handleSave}
+            onClick={onSave}
             className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
           >
             保存
