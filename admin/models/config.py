@@ -2,13 +2,6 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
-class LlmConfig(BaseModel):
-    base_url: str
-    api_key: str
-    model: str
-    timeout: int = 120
-
-
 class McpServerConfig(BaseModel):
     command: str | None = None
     args: list[str] = []

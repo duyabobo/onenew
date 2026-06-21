@@ -27,6 +27,28 @@ services:
       timeout: 5s
       retries: 5
 
+  llm-proxy:
+    build:
+      context: ./llm-proxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9001"
+    ports:
+      - "9001:9001"
+    networks:
+      - pi_net
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   admin:
     build:
       context: ./admin
@@ -102,7 +124,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      OPENAI_BASE_URL: "http://admin:9000/v1"
+      OPENAI_BASE_URL: "http://llm-proxy:9001/v1"
       OPENAI_API_KEY: "pi-agent-internal"
       SANDBOX_ROOT: "/data/sandboxes"
     # bwrap 需要 user namespace，privileged 模式提供必要的内核能力
@@ -119,7 +141,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      admin:
+      llm-proxy:
         condition: service_healthy
 
 volumes:

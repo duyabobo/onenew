@@ -4,14 +4,13 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from config import settings
 from datetime import datetime
-from models.config import LlmConfig, McpConfig, SkillMeta
+from models.config import McpConfig, SkillMeta
 
 logger = logging.getLogger(__name__)
 
 _client: AsyncIOMotorClient | None = None
 
 _CONFIG_COLLECTION = "configs"
-_LLM_DOC_ID = "llm"
 _MCP_DOC_ID = "mcp"
 
 
@@ -32,23 +31,6 @@ async def disconnect() -> None:
     if _client:
         _client.close()
         _client = None
-
-
-async def get_llm_config() -> LlmConfig | None:
-    raw = await get_db()[_CONFIG_COLLECTION].find_one({"_id": _LLM_DOC_ID})
-    if not raw:
-        return None
-    raw.pop("_id", None)
-    return LlmConfig(**raw)
-
-
-async def save_llm_config(cfg: LlmConfig) -> None:
-    await get_db()[_CONFIG_COLLECTION].update_one(
-        {"_id": _LLM_DOC_ID},
-        {"$set": cfg.model_dump()},
-        upsert=True,
-    )
-    logger.info("LLM 配置已保存: model=%s base_url=%s", cfg.model, cfg.base_url)
 
 
 async def get_mcp_config() -> McpConfig:

@@ -18,7 +18,6 @@ from models.config import LlmConfig
 
 logger = logging.getLogger(__name__)
 
-# 内存中的生效配置（启动时从 DB 加载，PUT 时同步更新）
 _current: LlmConfig | None = None
 
 
