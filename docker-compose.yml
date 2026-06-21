@@ -38,6 +38,8 @@ services:
       PORT: "9001"
     ports:
       - "9001:9001"
+    volumes:
+      - ./logs/llm-proxy:/app/logs
     networks:
       - pi_net
     depends_on:
@@ -64,6 +66,7 @@ services:
     volumes:
       # admin 需要写 global skills 到共享文件系统
       - sandbox_workspaces:/data/sandboxes
+      - ./logs/admin:/app/logs
     networks:
       - pi_net
     depends_on:
@@ -86,6 +89,8 @@ services:
       GATEWAY_PORT: "8000"
     ports:
       - "8000:8000"
+    volumes:
+      - ./logs/gateway:/app/logs
     networks:
       - pi_net
     depends_on:

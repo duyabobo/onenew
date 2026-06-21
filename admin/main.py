@@ -3,14 +3,12 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from logger import setup_logging
 from routes.config import router as config_router
 from routes.skills import router as skills_router
 from services import mongo_client
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+setup_logging("admin")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Pi Agent Admin", version="1.0.0")
