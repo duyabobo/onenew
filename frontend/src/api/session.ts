@@ -3,6 +3,34 @@ export interface CreateSessionResp {
   status: string;
 }
 
+export interface SessionSummary {
+  session_id: string;
+  status: string;
+  request: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface SessionDetail {
+  _id: string;
+  status: string;
+  request: string;
+  events_snapshot: Array<{ event_type: string; content: string }>;
+  created_at: string;
+}
+
+export async function getRecentSessions(userId: string, limit = 20): Promise<SessionSummary[]> {
+  const resp = await fetch(`/sessions?user_id=${encodeURIComponent(userId)}&limit=${limit}`);
+  if (!resp.ok) return [];
+  return resp.json();
+}
+
+export async function getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
+  const resp = await fetch(`/sessions/${sessionId}`);
+  if (!resp.ok) return null;
+  return resp.json();
+}
+
 export interface StreamEvent {
   event: string;
   data: string;

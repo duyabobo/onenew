@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { appendEventSnapshot } from "./mongo-client";
 import { config } from "./config";
 
 // Redis Stream key 模板（与 gateway 保持一致）
@@ -18,6 +19,8 @@ export interface OutputEvent {
 export class SessionOutputStream {
   private readonly streamKey: string;
   private pushCount = 0;
+  // 内存中积累所有非 done 事件，session 结束时一次性写入 MongoDB snapshot
+  private readonly pendingSnapshot: Array<Record<string, string>> = [];
 
   constructor(
     private readonly redis: Redis,
@@ -36,20 +39,38 @@ export class SessionOutputStream {
       event.content
     );
     this.pushCount++;
-    // 第一条写入时打日志，方便确认 Stream 已开始工作
     if (this.pushCount === 1) {
       console.log(`[stream] session ${this.sessionId}: 首条事件写入 Redis Stream key=${this.streamKey} msg_id=${msgId} event_type=${event.event_type}`);
+    }
+    // 将用户可见的事件（token/tool_call/tool_result）加入 snapshot 缓冲
+    // done/error 由 pushDone/pushError 单独处理，避免重复写入
+    if (event.event_type !== "done" && event.event_type !== "error") {
+      this.pendingSnapshot.push({ event_type: event.event_type, content: event.content });
     }
   }
 
   async pushDone(): Promise<void> {
     await this.push({ event_type: "done", content: "" });
     console.log(`[stream] session ${this.sessionId}: done 事件已推送，累计 ${this.pushCount} 条`);
+    // 一次性将所有事件批量写入 MongoDB snapshot（不在 for 循环里逐条写 DB）
+    await this._flushSnapshot();
   }
 
   async pushError(message: string): Promise<void> {
     await this.push({ event_type: "error", content: message });
     console.error(`[stream] session ${this.sessionId}: error 事件已推送: ${message}`);
+    await this._flushSnapshot();
+  }
+
+  /**
+   * 将内存中积累的事件一次性批量写入 MongoDB。
+   * 使用 $push + $each 一条 updateOne，避免 N 次 DB 写入。
+   */
+  private async _flushSnapshot(): Promise<void> {
+    if (this.pendingSnapshot.length === 0) return;
+    await appendEventSnapshot(this.sessionId, this.pendingSnapshot);
+    console.log(`[stream] session ${this.sessionId}: snapshot 已写入 MongoDB，共 ${this.pendingSnapshot.length} 条事件`);
+    this.pendingSnapshot.length = 0;
   }
 
   // 设置 Stream 自动过期（任务完成后 1 小时清理）

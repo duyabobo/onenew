@@ -50,15 +50,20 @@ export async function updateSessionStatus(
   console.log(`[mongo] session ${sessionId} 状态更新 -> ${status}`);
 }
 
+/**
+ * 批量写入事件到 events_snapshot。
+ * 使用 $push + $each 一次 updateOne，避免 N 次 DB 写入。
+ */
 export async function appendEventSnapshot(
   sessionId: string,
-  event: Record<string, unknown>
+  events: Array<Record<string, unknown>>
 ): Promise<void> {
+  if (events.length === 0) return;
   await getDb()
     .collection("sessions")
     .updateOne(
       { _id: sessionId } as unknown as Filter<Document>,
-      { $push: { events_snapshot: event } } as unknown as Filter<Document>
+      { $push: { events_snapshot: { $each: events } } } as unknown as Filter<Document>
     );
 }
 

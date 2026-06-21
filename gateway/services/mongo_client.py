@@ -5,7 +5,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from config import settings
-from models.session import SessionDocument, SessionStatus
+from models.session import SessionDocument, SessionStatus, SessionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,17 @@ async def find_active_session_by_request(user_id: str, request: str) -> SessionD
     if raw is None:
         return None
     return SessionDocument(**raw)
+
+
+async def get_recent_sessions(user_id: str, limit: int = 20) -> list[SessionSummary]:
+    """查询用户近期 session（按创建时间降序），只返回摘要字段，不含 events_snapshot"""
+    db = get_db()
+    cursor = db.sessions.find(
+        {"user_id": user_id},
+        # 只查需要的字段，排除大字段 events_snapshot
+        {"_id": 1, "status": 1, "request": 1, "created_at": 1, "completed_at": 1},
+    ).sort("created_at", -1).limit(limit)
+    return [SessionSummary(**raw) async for raw in cursor]
 
 
 async def append_event_snapshot(session_id: str, event: dict[str, Any]) -> None:

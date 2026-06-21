@@ -1,9 +1,9 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
-from models.session import CreateSessionRequest, CreateSessionResponse, SessionDocument, SessionStatus
+from models.session import CreateSessionRequest, CreateSessionResponse, SessionDocument, SessionStatus, SessionSummary
 from services import mongo_client, redis_client
 
 logger = logging.getLogger(__name__)
@@ -37,9 +37,18 @@ async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResp
     return CreateSessionResponse(session_id=session_id, status=SessionStatus.PENDING)
 
 
+@router.get("", response_model=list[SessionSummary])
+async def list_sessions(
+    user_id: str = Query(..., description="用户 ID"),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[SessionSummary]:
+    """查询用户近期 session 列表（按创建时间降序），用于历史消息恢复"""
+    return await mongo_client.get_recent_sessions(user_id, limit)
+
+
 @router.get("/{session_id}", response_model=SessionDocument)
 async def get_session(session_id: str) -> SessionDocument:
-    """查询 session 详情"""
+    """查询 session 详情（含 events_snapshot，用于历史消息回放）"""
     session = await mongo_client.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session 不存在")
