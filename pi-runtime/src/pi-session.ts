@@ -1,7 +1,10 @@
 import { spawn, ChildProcess } from "child_process";
 import { createInterface } from "readline";
+import { mkdir, writeFile, rm } from "fs/promises";
+import { join } from "path";
 import { SandboxPaths } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
+import { getMcpConfig } from "./mongo-client";
 
 // Pi RPC 消息类型（根据 pi docs/rpc.md）
 interface PiRpcMessage {
@@ -37,22 +40,47 @@ type PiEvent = PiTextEvent | PiToolCallEvent | PiToolResultEvent | PiDoneEvent;
  * 通过 RPC 模式启动 pi agent，将输出流式推送到 Redis Stream。
  * pi 进程通过 stdin/stdout 使用 JSONL 协议通信。
  */
+/**
+ * 为每个 session 创建独立的 pi config 目录，写入从 MongoDB 读取的 MCP 配置。
+ * 通过 PI_CODING_AGENT_DIR 环境变量让 pi 使用该目录，避免多 session 共用 ~/.pi/agent。
+ */
+async function setupPiConfigDir(sessionId: string): Promise<string> {
+  const piConfigDir = `/tmp/pi-config/${sessionId}`;
+  await mkdir(piConfigDir, { recursive: true });
+
+  const mcpConfig = await getMcpConfig();
+  // 将 MongoDB 中的 MCP 配置转换为 pi-mcp-adapter 期望的 mcpServers 格式
+  const piMcpJson = { mcpServers: mcpConfig.servers };
+  await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify(piMcpJson, null, 2));
+
+  console.log(`[pi-session] session=${sessionId}: pi config 目录就绪 ${piConfigDir}`);
+  return piConfigDir;
+}
+
+async function cleanupPiConfigDir(sessionId: string): Promise<void> {
+  await rm(`/tmp/pi-config/${sessionId}`, { recursive: true, force: true });
+}
+
 export async function runPiSession(
   sessionId: string,
   request: string,
   sandboxPaths: SandboxPaths,
   outputStream: SessionOutputStream
 ): Promise<void> {
+  const piConfigDir = await setupPiConfigDir(sessionId);
+
   return new Promise((resolve, reject) => {
     const piEnv = {
       ...process.env,
-      // 注入实际路径到 bwrap 扩展（路径内外一致，pi read/write/edit 工具和 bash 工具访问同一路径）
+      // 注入实际路径到 bwrap 扩展（路径内外一致）
       PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
       PI_SANDBOX_HOME: sandboxPaths.home,
       PI_SANDBOX_TMP: sandboxPaths.sessionTmp,
       // LLM 指向 admin 服务
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://admin:9000/v1",
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
+      // 每个 session 独立的 pi config 目录（含 MCP 配置），避免多 session 互相干扰
+      PI_CODING_AGENT_DIR: piConfigDir,
     };
 
     // 以 RPC 模式启动 pi，关闭 session 持久化（每个 session 独立临时会话）
@@ -97,11 +125,13 @@ export async function runPiSession(
 
     piProcess.on("close", async (code) => {
       console.log(`[pi-session] session ${sessionId}: pi 进程退出，code=${code}`);
+      await cleanupPiConfigDir(sessionId).catch(() => {});
       resolve();
     });
 
-    piProcess.on("error", (err) => {
+    piProcess.on("error", async (err) => {
       console.error(`[pi-session] session ${sessionId}: pi 进程启动失败:`, err);
+      await cleanupPiConfigDir(sessionId).catch(() => {});
       reject(err);
     });
 

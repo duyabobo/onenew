@@ -61,3 +61,24 @@ export async function appendEventSnapshot(
       { $push: { events_snapshot: event } as unknown }
     );
 }
+
+// ── MCP 配置读取 ─────────────────────────────────────────────────────────────
+
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  enabled?: boolean;
+}
+
+export interface McpConfig {
+  servers: Record<string, McpServerConfig>;
+}
+
+export async function getMcpConfig(): Promise<McpConfig> {
+  const raw = await getDb().collection("configs").findOne({ _id: "mcp" as unknown });
+  if (!raw) return { servers: {} };
+  const { _id: _omit, ...rest } = raw;
+  return rest as McpConfig;
+}

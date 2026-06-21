@@ -116,7 +116,7 @@ do_start() {
 
 # ── 等待健康检查 ─────────────────────────────────────────────────────────────────
 wait_healthy() {
-  local services=("mongo" "redis" "admin" "gateway")
+  local services=("mongo" "redis" "admin" "gateway" "frontend")
   local timeout=120
   local interval=5
 
@@ -154,6 +154,7 @@ print_summary() {
   echo "  pi-runtime 实例数：${PI_RUNTIME_REPLICAS}"
   echo ""
   echo "  服务地址："
+  echo "    前端     →  http://localhost:3000"
   echo "    Gateway  →  http://localhost:8000"
   echo "    Admin    →  http://localhost:9000"
   echo ""
