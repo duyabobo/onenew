@@ -16,13 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 全局安装 pi coding agent
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
-# 初始化 pi agent 目录并安装 pi-mcp-adapter 插件
-# pi-mcp-adapter 是 pi 调用 MCP 服务的唯一官方社区适配器，
-# 提供单一代理工具（~200 tokens）替代直接暴露所有 MCP 工具定义
+# 安装 pi-mcp-adapter 插件（pi 调用 MCP 服务的唯一社区适配器）
+# 等效于交互式环境下执行 `pi install npm:pi-mcp-adapter`
+# 原理：npm pack 下载 tarball → 解压到 pi extensions 目录，pi 启动时自动加载
 RUN mkdir -p /root/.pi/agent/extensions && \
-    cd /root/.pi/agent && \
-    npm install --prefix . pi-mcp-adapter && \
-    ln -s /root/.pi/agent/node_modules/pi-mcp-adapter /root/.pi/agent/extensions/pi-mcp-adapter
+    cd /tmp && \
+    npm pack pi-mcp-adapter && \
+    mkdir -p /root/.pi/agent/extensions/pi-mcp-adapter && \
+    tar -xzf pi-mcp-adapter-*.tgz \
+        -C /root/.pi/agent/extensions/pi-mcp-adapter \
+        --strip-components=1 && \
+    rm /tmp/pi-mcp-adapter-*.tgz
 
 WORKDIR /app
 
