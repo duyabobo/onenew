@@ -69,10 +69,11 @@ export async function appendEventSnapshot(
 
 // ── MCP 配置读取 ─────────────────────────────────────────────────────────────
 
+/**
+ * 只支持 url 类型（HTTP/SSE 远程 MCP Server）。
+ * command 类型的本地进程已在 admin 层和 pi-session 过滤层被禁止。
+ */
 export interface McpServerConfig {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
   url?: string;
   enabled?: boolean;
 }

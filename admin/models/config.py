@@ -1,14 +1,30 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class McpServerConfig(BaseModel):
-    command: str | None = None
-    args: list[str] = []
-    env: dict[str, str] = {}
-    url: str | None = None
+    """
+    MCP Server 配置。
+
+    只允许 HTTP/SSE 远程类型（url 字段）。
+    stdio 本地进程类型（command + args）被明确禁止：本地进程在 pi-runtime 容器内以 root 运行，
+    可访问 Docker 内网（MongoDB/Redis 等），是不可接受的攻击面。
+    """
+    url: str
     description: str = ""
     enabled: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_command_based(cls, values: dict) -> dict:
+        if values.get("command"):
+            raise ValueError(
+                "不允许配置 command 类型的 MCP Server（会在容器内启动本地进程）。"
+                "请改用 url 类型（HTTP/SSE 远程 MCP Server）。"
+            )
+        if not values.get("url"):
+            raise ValueError("MCP Server 必须提供 url 字段（HTTP/SSE 远程端点）。")
+        return values
 
 
 class McpConfig(BaseModel):

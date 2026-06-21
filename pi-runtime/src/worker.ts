@@ -33,8 +33,19 @@ const INSTANCE_ID = os.hostname();
 const USER_INSTANCE_KEY_TPL = "user:{userId}:instance";
 const USER_INSTANCE_TTL = 86400; // 24h
 
+// 实例心跳 key：pi-runtime 通过此 key 向 gateway 声明自己存活
+// gateway 路由前检查此 key，若不存在则认为实例已死，清除 sticky 绑定走全局频道
+const INSTANCE_ALIVE_KEY_TPL = "pi:instance:{instanceId}:alive";
+const INSTANCE_ALIVE_TTL = 60; // 60s，心跳每 30s 刷新一次，允许最多 2 次超时
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
 // 防止同一 session 被重复处理
 const activeSessions = new Set<string>();
+
+async function registerInstanceAlive(): Promise<void> {
+  const key = INSTANCE_ALIVE_KEY_TPL.replace("{instanceId}", INSTANCE_ID);
+  await getRedis().setex(key, INSTANCE_ALIVE_TTL, "1");
+}
 
 async function bindUserToInstance(userId: string): Promise<void> {
   const key = USER_INSTANCE_KEY_TPL.replace("{userId}", userId);
@@ -130,19 +141,21 @@ async function startSubscriber(): Promise<Redis> {
 }
 
 /**
- * 启动恢复：扫描 MongoDB 中所有孤儿 RUNNING/PENDING session，重新触发处理。
- * 解决 pi-runtime 重启后 Redis Pub/Sub 消息丢失导致 session 永久卡死的问题。
+ * 扫描 MongoDB 中所有孤儿 RUNNING/PENDING session，重新触发处理。
+ * 用于两个场景：
+ *   1. 启动时一次性恢复（解决重启前的遗留任务）
+ *   2. 定期轮询（解决启动竞态：task 发布时 pi-runtime 尚未订阅/recovery 尚未运行）
  */
 async function recoverOrphanedSessions(): Promise<void> {
   const sessions = await findOrphanedSessions();
-  if (sessions.length === 0) {
-    console.log("[worker] 无孤儿 session，无需恢复");
-    return;
-  }
 
-  console.log(`[worker] 发现 ${sessions.length} 个孤儿 session，开始恢复...`);
-  for (const s of sessions) {
-    console.log(`[worker] 恢复孤儿 session: session=${s.session_id} user=${s.user_id}`);
+  // 过滤掉当前实例已经在处理中的 session，防止重复处理
+  const unhandled = sessions.filter((s) => !activeSessions.has(s.session_id));
+  if (unhandled.length === 0) return;
+
+  console.log(`[worker] 发现 ${unhandled.length} 个孤儿 session，开始恢复...`);
+  for (const s of unhandled) {
+    console.log(`[worker] 恢复孤儿 session: session=${s.session_id} user=${s.user_id} status=${s.status}`);
     processSession({
       session_id: s.session_id,
       user_id: s.user_id,
@@ -154,6 +167,9 @@ async function recoverOrphanedSessions(): Promise<void> {
   }
 }
 
+// 定期扫描间隔：15 秒（覆盖启动竞态窗口，也能兜底其他意外丢失的任务）
+const ORPHAN_SCAN_INTERVAL_MS = 15_000;
+
 async function main(): Promise<void> {
   console.log(`[worker] pi-runtime 启动中... instance=${INSTANCE_ID}`);
 
@@ -161,13 +177,35 @@ async function main(): Promise<void> {
   await connectRedis();
   const subscriber = await startSubscriber();
 
-  // 订阅就绪后立即恢复孤儿 session（重启容错）
+  // 注册实例心跳（让 gateway 知道本实例存活，避免 sticky 路由到死实例）
+  await registerInstanceAlive();
+  console.log(`[worker] 实例心跳已注册: pi:instance:${INSTANCE_ID}:alive (TTL=${INSTANCE_ALIVE_TTL}s)`);
+
+  // 订阅就绪后立即恢复孤儿 session（覆盖重启前的遗留任务）
   await recoverOrphanedSessions();
 
-  console.log("[worker] pi-runtime 就绪，等待任务...");
+  // 定期扫描孤儿 session（覆盖启动竞态：task 发布时 recovery 尚未运行的时间窗口）
+  const scanTimer = setInterval(() => {
+    recoverOrphanedSessions().catch((err) =>
+      console.error("[worker] 定期孤儿 session 扫描失败:", err)
+    );
+  }, ORPHAN_SCAN_INTERVAL_MS);
+
+  // 定期刷新心跳（TTL 60s，每 30s 刷新，防止 gateway 误判实例死亡）
+  const heartbeatTimer = setInterval(() => {
+    registerInstanceAlive().catch((err) =>
+      console.error("[worker] 心跳刷新失败:", err)
+    );
+  }, HEARTBEAT_INTERVAL_MS);
+
+  console.log(`[worker] pi-runtime 就绪，等待任务...（孤儿扫描每 ${ORPHAN_SCAN_INTERVAL_MS / 1000}s，心跳每 ${HEARTBEAT_INTERVAL_MS / 1000}s）`);
 
   const shutdown = async () => {
     console.log("[worker] pi-runtime 正在关闭...");
+    clearInterval(scanTimer);
+    clearInterval(heartbeatTimer);
+    // 主动注销心跳，让 gateway 立即感知实例下线
+    await getRedis().del(INSTANCE_ALIVE_KEY_TPL.replace("{instanceId}", INSTANCE_ID)).catch(() => {});
     await subscriber.quit();
     await disconnectRedis();
     await disconnectMongo();

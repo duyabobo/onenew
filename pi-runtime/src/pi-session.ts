@@ -4,7 +4,7 @@ import { mkdir, writeFile, rm } from "fs/promises";
 import { join } from "path";
 import { SandboxPaths } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
-import { getMcpConfig } from "./mongo-client";
+import { getMcpConfig, McpServerConfig } from "./mongo-client";
 
 // Pi RPC 协议类型（基于 pi@0.79.x rpc-types.d.ts / agent-core/types.d.ts）
 // 命令方向：host → pi (stdin)
@@ -60,6 +60,26 @@ type PiEvent =
   | { type: string; [key: string]: unknown };
 
 /**
+ * 过滤 MCP 配置：只保留 url 类型的远程 MCP Server。
+ * command 类型的本地进程在容器内以 root 运行，可访问内网，是不可接受的攻击面。
+ */
+function filterUrlOnlyMcpServers(
+  servers: Record<string, McpServerConfig>
+): Record<string, McpServerConfig> {
+  const safe: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    // 用 unknown 转型以兼容 MongoDB 中可能存在的旧数据（含 command 字段）
+    const raw = cfg as unknown as Record<string, unknown>;
+    if (cfg.url && !raw["command"]) {
+      safe[name] = cfg;
+    } else {
+      console.warn(`[pi-session] MCP Server "${name}" 已跳过：缺少 url 或含有 command 字段（旧数据或非法配置）`);
+    }
+  }
+  return safe;
+}
+
+/**
  * 通过 RPC 模式启动 pi agent，将输出流式推送到 Redis Stream。
  * pi 进程通过 stdin/stdout 使用 JSONL 协议通信。
  */
@@ -76,8 +96,11 @@ async function setupPiConfigDir(
   await mkdir(piConfigDir, { recursive: true });
 
   // MCP 配置（从 MongoDB 读取）
+  // 防御纵深：只保留 url 类型的远程 MCP Server，command 类型的本地进程强制过滤掉。
+  // admin 层已拒绝 command 类型写入，此处作为最后一道防线。
   const mcpConfig = await getMcpConfig();
-  const piMcpJson = { mcpServers: mcpConfig.servers };
+  const safeServers = filterUrlOnlyMcpServers(mcpConfig.servers);
+  const piMcpJson = { mcpServers: safeServers };
   await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify(piMcpJson, null, 2));
 
   // 注册 llm-proxy 自定义 provider（pi 通过 openai-completions API 调用 llm-proxy）
