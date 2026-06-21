@@ -82,3 +82,27 @@ export async function getMcpConfig(): Promise<McpConfig> {
   const { _id: _omit, ...rest } = raw;
   return rest as McpConfig;
 }
+
+// ── Skill 读取 ───────────────────────────────────────────────────────────────
+
+export interface SkillDoc {
+  name: string;
+  description: string;
+  content: string;
+  tags?: string[];
+}
+
+/**
+ * 按 name 批量获取 skill（含 content），供 pi-session 注入 system prompt 使用。
+ * 空列表直接返回空数组，不查 DB。
+ */
+export async function getSkillsByNames(names: string[]): Promise<SkillDoc[]> {
+  if (names.length === 0) return [];
+  const cursor = getDb().collection("skills").find({ name: { $in: names } });
+  const docs: SkillDoc[] = [];
+  for await (const raw of cursor) {
+    const { _id: _omit, ...rest } = raw;
+    docs.push(rest as SkillDoc);
+  }
+  return docs;
+}

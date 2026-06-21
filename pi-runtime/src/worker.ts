@@ -23,6 +23,7 @@ interface TaskPayload {
   session_id: string;
   user_id: string;
   request: string;
+  skill_ids: string[];
 }
 
 // 本实例唯一 ID（容器 hostname 天然唯一）
@@ -42,7 +43,7 @@ async function bindUserToInstance(userId: string): Promise<void> {
 }
 
 async function processSession(payload: TaskPayload): Promise<void> {
-  const { session_id, user_id, request } = payload;
+  const { session_id, user_id, request, skill_ids = [] } = payload;
 
   if (activeSessions.has(session_id)) {
     console.warn(`[worker] session ${session_id} 已在处理中，跳过重复任务`);
@@ -62,7 +63,7 @@ async function processSession(payload: TaskPayload): Promise<void> {
     // userId 用于确定持久化 workspace 路径，同一 user 跨 session 复用
     const sandboxPaths = await createSandbox(user_id, session_id);
 
-    await runPiSession(session_id, request, sandboxPaths, outputStream);
+    await runPiSession(session_id, request, sandboxPaths, outputStream, skill_ids);
 
     await outputStream.expire(3600);
     await updateSessionStatus(session_id, "COMPLETED");

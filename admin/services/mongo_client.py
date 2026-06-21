@@ -3,7 +3,8 @@ import logging
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from config import settings
-from models.config import LlmConfig, McpConfig
+from datetime import datetime
+from models.config import LlmConfig, McpConfig, SkillDoc
 
 logger = logging.getLogger(__name__)
 
@@ -65,3 +66,54 @@ async def save_mcp_config(cfg: McpConfig) -> None:
         upsert=True,
     )
     logger.info("MCP 配置已保存，共 %d 个 server", len(cfg.servers))
+
+
+# ── Skill 管理 ────────────────────────────────────────────────────────────────
+
+_SKILL_COLLECTION = "skills"
+
+
+async def list_skills() -> list[SkillDoc]:
+    cursor = get_db()[_SKILL_COLLECTION].find({}, {"content": 0})
+    docs = []
+    async for raw in cursor:
+        raw.pop("_id", None)
+        docs.append(SkillDoc(**raw))
+    return docs
+
+
+async def get_skill(name: str) -> SkillDoc | None:
+    raw = await get_db()[_SKILL_COLLECTION].find_one({"name": name})
+    if not raw:
+        return None
+    raw.pop("_id", None)
+    return SkillDoc(**raw)
+
+
+async def get_skills_by_names(names: list[str]) -> list[SkillDoc]:
+    """批量获取指定 skill（含 content），供 pi-runtime 注入 system prompt 使用"""
+    cursor = get_db()[_SKILL_COLLECTION].find({"name": {"$in": names}})
+    docs = []
+    async for raw in cursor:
+        raw.pop("_id", None)
+        docs.append(SkillDoc(**raw))
+    return docs
+
+
+async def save_skill(doc: SkillDoc) -> SkillDoc:
+    doc.updated_at = datetime.utcnow()
+    await get_db()[_SKILL_COLLECTION].update_one(
+        {"name": doc.name},
+        {"$set": doc.model_dump(), "$setOnInsert": {"created_at": doc.created_at}},
+        upsert=True,
+    )
+    logger.info("skill 已保存: %s", doc.name)
+    return doc
+
+
+async def delete_skill(name: str) -> bool:
+    result = await get_db()[_SKILL_COLLECTION].delete_one({"name": name})
+    if result.deleted_count:
+        logger.info("skill 已删除: %s", name)
+        return True
+    return False

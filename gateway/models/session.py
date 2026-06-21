@@ -19,7 +19,7 @@ class SessionDocument(BaseModel):
     user_id: str
     status: SessionStatus = SessionStatus.PENDING
     request: str
-    # pi-runtime 执行过程中产生的事件快照，供断线重连时回放
+    skill_ids: list[str] = Field(default_factory=list)
     events_snapshot: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: datetime | None = None
@@ -33,6 +33,7 @@ class SessionDocument(BaseModel):
 class CreateSessionRequest(BaseModel):
     user_id: str
     request: str
+    skill_ids: list[str] = []   # 用户明确选择的 skill，pi-runtime 直接注入 system prompt
 
 
 class CreateSessionResponse(BaseModel):

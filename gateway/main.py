@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from routes import session, stream
+from routes import session, skills, stream
 from services import mongo_client, redis_client
 
 logging.basicConfig(
@@ -25,6 +25,7 @@ app.add_middleware(
 
 app.include_router(session.router)
 app.include_router(stream.router)
+app.include_router(skills.router)
 
 
 @app.on_event("startup")

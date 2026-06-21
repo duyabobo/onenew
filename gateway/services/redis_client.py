@@ -56,7 +56,9 @@ async def _get_user_instance(user_id: str) -> str | None:
     return await client.get(USER_INSTANCE_KEY.format(user_id=user_id))
 
 
-async def publish_task(session_id: str, user_id: str, request: str) -> None:
+async def publish_task(
+    session_id: str, user_id: str, request: str, skill_ids: list[str] | None = None
+) -> None:
     """
     向 pi-runtime 发布新 session 任务。
 
@@ -65,7 +67,12 @@ async def publish_task(session_id: str, user_id: str, request: str) -> None:
       2. 若已绑定，发布到该实例专属频道（保证 workspace 连续性）
       3. 若未绑定，发布到全局频道（由任意实例认领，认领时写入绑定关系）
     """
-    payload = json.dumps({"session_id": session_id, "user_id": user_id, "request": request})
+    payload = json.dumps({
+        "session_id": session_id,
+        "user_id": user_id,
+        "request": request,
+        "skill_ids": skill_ids or [],
+    })
     client = get_redis()
 
     instance_id = await _get_user_instance(user_id)

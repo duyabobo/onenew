@@ -9,11 +9,15 @@ export interface StreamEvent {
   id?: string;
 }
 
-export async function createSession(userId: string, request: string): Promise<CreateSessionResp> {
+export async function createSession(
+  userId: string,
+  request: string,
+  skillIds: string[] = []
+): Promise<CreateSessionResp> {
   const resp = await fetch("/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, request }),
+    body: JSON.stringify({ user_id: userId, request, skill_ids: skillIds }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));

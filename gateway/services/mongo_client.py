@@ -32,15 +32,18 @@ async def disconnect() -> None:
         logger.info("MongoDB 连接已关闭")
 
 
-async def create_session(session_id: str, user_id: str, request: str) -> SessionDocument:
+async def create_session(
+    session_id: str, user_id: str, request: str, skill_ids: list[str] | None = None
+) -> SessionDocument:
     doc = SessionDocument(
         _id=session_id,
         user_id=user_id,
         request=request,
+        skill_ids=skill_ids or [],
     )
     db = get_db()
     await db.sessions.insert_one(doc.model_dump(by_alias=True))
-    logger.info("session 创建成功: %s user=%s", session_id, user_id)
+    logger.info("session 创建成功: %s user=%s skills=%s", session_id, user_id, skill_ids)
     return doc
 
 

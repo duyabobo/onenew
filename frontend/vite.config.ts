@@ -7,8 +7,9 @@ export default defineConfig({
     port: 3000,
     proxy: {
       "/sessions": "http://localhost:8000",
+      "/skills": "http://localhost:8000",    // skill 列表 → gateway
       "/health": "http://localhost:8000",
-      "/config": "http://localhost:9000",   // LLM / MCP 配置 → admin
+      "/config": "http://localhost:9000",    // LLM / MCP / Skill CRUD → admin
     },
   },
 });

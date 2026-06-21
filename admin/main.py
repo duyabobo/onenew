@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes import proxy
 from routes.config import router as config_router
+from routes.skills import router as skills_router
 from services import mongo_client
 from services.llm_config_store import load_from_db
 
@@ -25,6 +26,7 @@ app.add_middleware(
 
 app.include_router(proxy.router)
 app.include_router(config_router)
+app.include_router(skills_router)
 
 
 @app.on_event("startup")

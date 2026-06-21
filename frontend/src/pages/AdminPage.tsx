@@ -1,8 +1,9 @@
 import { useState } from "react";
 import LlmConfigPanel from "../components/LlmConfigPanel";
 import McpConfigPanel from "../components/McpConfigPanel";
+import SkillsPanel from "../components/SkillsPanel";
 
-type Tab = "llm" | "mcp";
+type Tab = "llm" | "mcp" | "skills";
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>("llm");
@@ -13,7 +14,7 @@ export default function AdminPage() {
 
       {/* Tab 切换 */}
       <div className="flex gap-1 border-b border-gray-200 mb-6">
-        {(["llm", "mcp"] as Tab[]).map((t) => (
+        {(["llm", "mcp", "skills"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -23,13 +24,14 @@ export default function AdminPage() {
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            {t === "llm" ? "LLM Provider" : "MCP Servers"}
+            {t === "llm" ? "LLM Provider" : t === "mcp" ? "MCP Servers" : "Skills"}
           </button>
         ))}
       </div>
 
       {tab === "llm" && <LlmConfigPanel />}
       {tab === "mcp" && <McpConfigPanel />}
+      {tab === "skills" && <SkillsPanel />}
     </div>
   );
 }

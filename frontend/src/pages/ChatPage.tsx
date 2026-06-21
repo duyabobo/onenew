@@ -1,15 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createSession, streamSession } from "../api/session";
+import { skillsApi, Skill } from "../api/skills";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
   isStreaming?: boolean;
-}
-
-interface ToolCall {
-  name: string;
-  input: Record<string, unknown>;
 }
 
 export default function ChatPage() {
@@ -18,8 +14,16 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [selectedSkillId, setSelectedSkillId] = useState<string>("");
   const closeStreamRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    skillsApi.list()
+      .then((list) => setSkills(list.filter((s) => !s.hidden)))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -46,8 +50,10 @@ export default function ChatPage() {
     setIsLoading(true);
     setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
 
+    const skillIds = selectedSkillId ? [selectedSkillId] : [];
+
     try {
-      const { session_id } = await createSession(userId, trimmed);
+      const { session_id } = await createSession(userId, trimmed, skillIds);
       setMessages((prev) => [...prev, { role: "assistant", content: "", isStreaming: true }]);
 
       closeStreamRef.current = streamSession(
@@ -56,7 +62,7 @@ export default function ChatPage() {
           if (ev.event === "token") {
             appendToLastAssistant(ev.data);
           } else if (ev.event === "tool_call") {
-            const tc = JSON.parse(ev.data) as ToolCall;
+            const tc = JSON.parse(ev.data) as { name: string; input: unknown };
             appendToLastAssistant(`\n\`\`\`tool:${tc.name}\n${JSON.stringify(tc.input, null, 2)}\n\`\`\`\n`);
           }
         },
@@ -75,7 +81,7 @@ export default function ChatPage() {
       setError(e instanceof Error ? e.message : "请求失败");
       setIsLoading(false);
     }
-  }, [input, userId, isLoading, appendToLastAssistant]);
+  }, [input, userId, isLoading, selectedSkillId, appendToLastAssistant]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -83,33 +89,52 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-53px)]">
-      {/* 用户 ID 栏 */}
-      <div className="bg-white border-b px-4 py-2 flex items-center gap-3">
+      {/* 顶部配置栏 */}
+      <div className="bg-white border-b px-4 py-2 flex items-center gap-3 flex-wrap">
         <label className="text-sm text-gray-500 whitespace-nowrap">用户 ID</label>
         <input
           value={userId}
           onChange={(e) => setUserId(e.target.value)}
           placeholder="alice"
-          className="text-sm border border-gray-300 rounded px-2 py-1 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          className="text-sm border border-gray-300 rounded px-2 py-1 w-32 focus:outline-none focus:ring-1 focus:ring-indigo-400"
         />
-        {isLoading && (
-          <span className="text-xs text-indigo-500 animate-pulse">Pi 正在思考…</span>
+
+        <span className="text-gray-300">|</span>
+
+        <label className="text-sm text-gray-500 whitespace-nowrap">Skill</label>
+        <select
+          value={selectedSkillId}
+          onChange={(e) => setSelectedSkillId(e.target.value)}
+          className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+        >
+          <option value="">默认（不指定）</option>
+          {skills.map((s) => (
+            <option key={s.name} value={s.name} title={s.description}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        {selectedSkillId && (
+          <span className="text-xs text-indigo-500">
+            {skills.find((s) => s.name === selectedSkillId)?.description ?? ""}
+          </span>
         )}
-        {error && <span className="text-xs text-red-500">{error}</span>}
+
+        {isLoading && (
+          <span className="ml-auto text-xs text-indigo-500 animate-pulse">Pi 正在思考…</span>
+        )}
+        {error && <span className="ml-auto text-xs text-red-500">{error}</span>}
       </div>
 
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-20 text-sm">
-            发送消息，Pi Agent 将为你执行任务
+            选择 Skill（可选），发送消息，Pi Agent 将为你执行任务
           </div>
         )}
         {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
               className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words ${
                 msg.role === "user"

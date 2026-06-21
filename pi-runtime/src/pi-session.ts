@@ -4,7 +4,7 @@ import { mkdir, writeFile, rm } from "fs/promises";
 import { join } from "path";
 import { SandboxPaths } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
-import { getMcpConfig } from "./mongo-client";
+import { getMcpConfig, getSkillsByNames } from "./mongo-client";
 
 // Pi RPC 消息类型（根据 pi docs/rpc.md）
 interface PiRpcMessage {
@@ -61,11 +61,27 @@ async function cleanupPiConfigDir(sessionId: string): Promise<void> {
   await rm(`/tmp/pi-config/${sessionId}`, { recursive: true, force: true });
 }
 
+/**
+ * 将用户选定的 skill content 拼接为 system prompt。
+ * 跳过渐进式披露——用户已明确选择，直接注入全量内容。
+ */
+async function buildSystemPrompt(skillIds: string[]): Promise<string> {
+  if (skillIds.length === 0) return "";
+  const skills = await getSkillsByNames(skillIds);
+  if (skills.length === 0) return "";
+
+  const parts = skills.map((s) => `# Skill: ${s.name}\n\n${s.content}`);
+  const systemPrompt = parts.join("\n\n---\n\n");
+  console.log(`[pi-session] 注入 ${skills.length} 个 skill: ${skills.map((s) => s.name).join(", ")}`);
+  return systemPrompt;
+}
+
 export async function runPiSession(
   sessionId: string,
   request: string,
   sandboxPaths: SandboxPaths,
-  outputStream: SessionOutputStream
+  outputStream: SessionOutputStream,
+  skillIds: string[] = []
 ): Promise<void> {
   const piConfigDir = await setupPiConfigDir(sessionId);
 
@@ -135,9 +151,12 @@ export async function runPiSession(
       reject(err);
     });
 
-    // 通过 stdin 发送用户 prompt
-    const promptMsg = JSON.stringify({ type: "prompt", text: request }) + "\n";
-    piProcess.stdin!.write(promptMsg);
+    // 构建 system prompt（用户明确选定的 skill，直接注入，跳过 pi 渐进式披露选择）
+    const systemPrompt = await buildSystemPrompt(skillIds);
+    const promptPayload: Record<string, string> = { type: "prompt", text: request };
+    if (systemPrompt) promptPayload.system = systemPrompt;
+
+    piProcess.stdin!.write(JSON.stringify(promptPayload) + "\n");
   });
 }
 

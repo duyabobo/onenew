@@ -24,8 +24,8 @@ async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResp
         return CreateSessionResponse(session_id=existing.id, status=existing.status)
 
     session_id = str(uuid.uuid4())
-    await mongo_client.create_session(session_id, body.user_id, body.request)
-    await redis_client.publish_task(session_id, body.user_id, body.request)
+    await mongo_client.create_session(session_id, body.user_id, body.request, body.skill_ids)
+    await redis_client.publish_task(session_id, body.user_id, body.request, body.skill_ids)
 
     return CreateSessionResponse(session_id=session_id, status=SessionStatus.PENDING)
 
