@@ -32,7 +32,7 @@ def _inject_default_model(body: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", response_model=None)
 async def proxy_chat_completions(request: Request) -> StreamingResponse | dict:
     body: dict[str, Any] = await request.json()
     body = _inject_default_model(body)
