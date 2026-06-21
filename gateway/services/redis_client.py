@@ -71,7 +71,12 @@ async def _get_user_instance(user_id: str) -> str | None:
 
 
 async def publish_task(
-    session_id: str, user_id: str, request: str, skill_ids: list[str] | None = None
+    session_id: str,
+    user_id: str,
+    request: str,
+    skill_ids: list[str] | None = None,
+    conversation_id: str | None = None,
+    context: str | None = None,
 ) -> None:
     """
     向 pi-runtime 发布新 session 任务。
@@ -86,6 +91,8 @@ async def publish_task(
         "user_id": user_id,
         "request": request,
         "skill_ids": skill_ids or [],
+        "conversation_id": conversation_id,
+        "context": context,
     })
     client = get_redis()
 

@@ -17,6 +17,7 @@ class SessionDocument(BaseModel):
 
     id: str = Field(alias="_id")
     user_id: str
+    conversation_id: str | None = None
     status: SessionStatus = SessionStatus.PENDING
     request: str
     skill_ids: list[str] = Field(default_factory=list)
@@ -33,7 +34,9 @@ class SessionDocument(BaseModel):
 class CreateSessionRequest(BaseModel):
     user_id: str
     request: str
-    skill_ids: list[str] = []   # 用户明确选择的 skill，pi-runtime 直接注入 system prompt
+    skill_ids: list[str] = []
+    conversation_id: str | None = None   # 关联到同一对话线程；前端生成，首条消息时赋值
+    context: str | None = None           # 格式化的历史上下文（仅用于本次 pi 调用，不持久化）
 
 
 class CreateSessionResponse(BaseModel):
@@ -44,6 +47,7 @@ class CreateSessionResponse(BaseModel):
 class SessionSummary(BaseModel):
     """用于历史列表的轻量摘要（不含 events_snapshot 全量数据）"""
     session_id: str
+    conversation_id: str | None = None
     status: SessionStatus
     request: str
     created_at: datetime

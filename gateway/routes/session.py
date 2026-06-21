@@ -25,13 +25,18 @@ async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResp
 
     session_id = str(uuid.uuid4())
     request_preview = body.request[:80].replace("\n", " ")
-    logger.info("新建 session: session_id=%s user=%s skill_ids=%s request='%s'",
-                session_id, body.user_id, body.skill_ids, request_preview)
+    logger.info("新建 session: session_id=%s user=%s conversation_id=%s skill_ids=%s request='%s'",
+                session_id, body.user_id, body.conversation_id, body.skill_ids, request_preview)
 
-    await mongo_client.create_session(session_id, body.user_id, body.request, body.skill_ids)
+    await mongo_client.create_session(
+        session_id, body.user_id, body.request, body.skill_ids, body.conversation_id
+    )
     logger.info("session 已写入 MongoDB: session_id=%s", session_id)
 
-    await redis_client.publish_task(session_id, body.user_id, body.request, body.skill_ids)
+    await redis_client.publish_task(
+        session_id, body.user_id, body.request, body.skill_ids,
+        conversation_id=body.conversation_id, context=body.context
+    )
     logger.info("session 任务已发布到 Redis: session_id=%s", session_id)
 
     return CreateSessionResponse(session_id=session_id, status=SessionStatus.PENDING)
@@ -39,10 +44,20 @@ async def get_or_create_session(body: CreateSessionRequest) -> CreateSessionResp
 
 @router.get("", response_model=list[SessionSummary])
 async def list_sessions(
-    user_id: str = Query(..., description="用户 ID"),
+    user_id: str | None = Query(default=None, description="用户 ID（与 conversation_id 至少提供一个）"),
+    conversation_id: str | None = Query(default=None, description="对话 ID，指定后只返回该对话内的 session"),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[SessionSummary]:
-    """查询用户近期 session 列表（按创建时间降序），用于历史消息恢复"""
+    """
+    查询 session 列表：
+    - 指定 conversation_id：返回该对话内所有 session（按时间升序，用于对话重建）
+    - 仅指定 user_id：返回用户近期 session（按时间降序）
+    - 两者都没有：报错
+    """
+    if conversation_id:
+        return await mongo_client.get_sessions_by_conversation(conversation_id)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="必须提供 user_id 或 conversation_id")
     return await mongo_client.get_recent_sessions(user_id, limit)
 
 

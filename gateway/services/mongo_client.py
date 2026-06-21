@@ -33,17 +33,22 @@ async def disconnect() -> None:
 
 
 async def create_session(
-    session_id: str, user_id: str, request: str, skill_ids: list[str] | None = None
+    session_id: str,
+    user_id: str,
+    request: str,
+    skill_ids: list[str] | None = None,
+    conversation_id: str | None = None,
 ) -> SessionDocument:
     doc = SessionDocument(
         _id=session_id,
         user_id=user_id,
+        conversation_id=conversation_id,
         request=request,
         skill_ids=skill_ids or [],
     )
     db = get_db()
     await db.sessions.insert_one(doc.model_dump(by_alias=True))
-    logger.info("session 创建成功: %s user=%s skills=%s", session_id, user_id, skill_ids)
+    logger.info("session 创建成功: %s user=%s conversation=%s skills=%s", session_id, user_id, conversation_id, skill_ids)
     return doc
 
 
@@ -78,9 +83,21 @@ async def get_recent_sessions(user_id: str, limit: int = 20) -> list[SessionSumm
     db = get_db()
     cursor = db.sessions.find(
         {"user_id": user_id},
-        # 只查需要的字段，排除大字段 events_snapshot
-        {"_id": 1, "status": 1, "request": 1, "created_at": 1, "completed_at": 1},
+        {"_id": 1, "status": 1, "request": 1, "created_at": 1, "completed_at": 1, "conversation_id": 1},
     ).sort("created_at", -1).limit(limit)
+    return [
+        SessionSummary(session_id=str(raw["_id"]), **{k: v for k, v in raw.items() if k != "_id"})
+        async for raw in cursor
+    ]
+
+
+async def get_sessions_by_conversation(conversation_id: str) -> list[SessionSummary]:
+    """按对话 ID 查询所有 session（按创建时间升序，重建消息历史顺序）"""
+    db = get_db()
+    cursor = db.sessions.find(
+        {"conversation_id": conversation_id},
+        {"_id": 1, "status": 1, "request": 1, "created_at": 1, "completed_at": 1, "conversation_id": 1},
+    ).sort("created_at", 1)
     return [
         SessionSummary(session_id=str(raw["_id"]), **{k: v for k, v in raw.items() if k != "_id"})
         async for raw in cursor

@@ -191,7 +191,8 @@ export async function runPiSession(
   request: string,
   sandboxPaths: SandboxPaths,
   outputStream: SessionOutputStream,
-  skillIds: string[] = []
+  skillIds: string[] = [],
+  context?: string
 ): Promise<void> {
   const piConfigDir = await setupPiConfigDir(
     sessionId,
@@ -276,9 +277,11 @@ export async function runPiSession(
     });
 
     // 发送 prompt（pi RPC 协议用 message 字段，不是 text）
-    const promptPayload: PiPromptCommand = { type: "prompt", message: request };
+    // 有历史上下文时，将上下文拼在 request 之前，让 pi 理解对话连续性
+    const promptMessage = context ? `${context}\n\n[当前请求]\n${request}` : request;
+    const promptPayload: PiPromptCommand = { type: "prompt", message: promptMessage };
     piProcess.stdin!.write(JSON.stringify(promptPayload) + "\n");
-    console.log(`[pi-session] session ${sessionId}: prompt 已写入 stdin（${request.length} 字符）`);
+    console.log(`[pi-session] session ${sessionId}: prompt 已写入 stdin（context=${context ? context.length : 0}字符 request=${request.length}字符）`);
   });
 }
 

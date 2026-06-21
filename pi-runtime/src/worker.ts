@@ -24,6 +24,8 @@ interface TaskPayload {
   user_id: string;
   request: string;
   skill_ids: string[];
+  conversation_id?: string;
+  context?: string;     // 格式化的历史上下文，仅用于本次 pi 调用，不持久化
 }
 
 // 本实例唯一 ID（容器 hostname 天然唯一）
@@ -54,7 +56,7 @@ async function bindUserToInstance(userId: string): Promise<void> {
 }
 
 async function processSession(payload: TaskPayload): Promise<void> {
-  const { session_id, user_id, request, skill_ids = [] } = payload;
+  const { session_id, user_id, request, skill_ids = [], context } = payload;
 
   if (activeSessions.has(session_id)) {
     console.warn(`[worker] session ${session_id} 已在处理中，跳过重复任务`);
@@ -79,7 +81,7 @@ async function processSession(payload: TaskPayload): Promise<void> {
     console.log(`[worker] session ${session_id}: 沙盒就绪，workspace=${sandboxPaths.workspace}`);
 
     console.log(`[worker] session ${session_id}: 启动 pi agent...`);
-    await runPiSession(session_id, request, sandboxPaths, outputStream, skill_ids);
+    await runPiSession(session_id, request, sandboxPaths, outputStream, skill_ids, context);
 
     const elapsed = Date.now() - startAt;
     await outputStream.expire(3600);
@@ -161,6 +163,7 @@ async function recoverOrphanedSessions(): Promise<void> {
       user_id: s.user_id,
       request: s.request,
       skill_ids: s.skill_ids,
+      // 孤儿恢复时没有 context，pi 会从头处理当前 request
     }).catch((err) =>
       console.error(`[worker] 恢复 session 失败: session=${s.session_id}`, err)
     );

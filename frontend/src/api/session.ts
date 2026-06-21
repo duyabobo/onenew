@@ -5,6 +5,7 @@ export interface CreateSessionResp {
 
 export interface SessionSummary {
   session_id: string;
+  conversation_id: string | null;
   status: string;
   request: string;
   created_at: string;
@@ -40,17 +41,32 @@ export interface StreamEvent {
 export async function createSession(
   userId: string,
   request: string,
-  skillIds: string[] = []
+  skillIds: string[] = [],
+  conversationId?: string,
+  context?: string,
 ): Promise<CreateSessionResp> {
   const resp = await fetch("/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, request, skill_ids: skillIds }),
+    body: JSON.stringify({
+      user_id: userId,
+      request,
+      skill_ids: skillIds,
+      conversation_id: conversationId ?? null,
+      context: context ?? null,
+    }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     throw new Error((err as { detail?: string }).detail ?? `HTTP ${resp.status}`);
   }
+  return resp.json();
+}
+
+/** 获取某对话的所有 session（按时间升序，用于重建消息列表） */
+export async function getConversationSessions(conversationId: string): Promise<SessionSummary[]> {
+  const resp = await fetch(`/sessions?conversation_id=${encodeURIComponent(conversationId)}`);
+  if (!resp.ok) return [];
   return resp.json();
 }
 
