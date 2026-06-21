@@ -96,6 +96,7 @@ export interface OrphanedSession {
   user_id: string;
   request: string;
   skill_ids: string[];
+  status: string;
 }
 
 /**
@@ -113,6 +114,7 @@ export async function findOrphanedSessions(): Promise<OrphanedSession[]> {
     user_id: String(doc.user_id),
     request: String(doc.request ?? ""),
     skill_ids: Array.isArray(doc.skill_ids) ? (doc.skill_ids as string[]) : [],
+    status: String(doc.status ?? ""),
   }));
 }
 

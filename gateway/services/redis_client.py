@@ -20,6 +20,8 @@ TASK_CHANNEL_INSTANCE = "sessions:{instance_id}:new"
 # user → pi-runtime instance 的亲和映射，TTL 24h（用于 sticky session）
 USER_INSTANCE_KEY = "user:{user_id}:instance"
 USER_INSTANCE_TTL = 86400
+# pi-runtime 实例心跳 key（TTL 60s，每 30s 刷新；key 不存在表示实例已下线）
+INSTANCE_ALIVE_KEY = "pi:instance:{instance_id}:alive"
 
 
 def _get_stream_key(session_id: str) -> str:
@@ -51,9 +53,21 @@ async def disconnect() -> None:
 
 
 async def _get_user_instance(user_id: str) -> str | None:
-    """查询 user 是否已绑定到某个 pi-runtime 实例（sticky session）"""
+    """查询 user 绑定的 pi-runtime 实例，并验证实例是否存活。
+    若实例心跳 key 不存在（实例已重启或下线），清除 stale 绑定并返回 None。
+    """
     client = get_redis()
-    return await client.get(USER_INSTANCE_KEY.format(user_id=user_id))
+    instance_id = await client.get(USER_INSTANCE_KEY.format(user_id=user_id))
+    if not instance_id:
+        return None
+
+    alive = await client.exists(INSTANCE_ALIVE_KEY.format(instance_id=instance_id))
+    if not alive:
+        logger.info("sticky 实例 %s 已下线，清除 user=%s 的 stale 绑定", instance_id, user_id)
+        await client.delete(USER_INSTANCE_KEY.format(user_id=user_id))
+        return None
+
+    return instance_id
 
 
 async def publish_task(
