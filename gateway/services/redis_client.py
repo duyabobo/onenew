@@ -13,8 +13,13 @@ _pool: aioredis.ConnectionPool | None = None
 
 # Redis Stream key 模板
 STREAM_KEY = "session:{session_id}:stream"
-# Pub/Sub channel，gateway 向 pi-runtime 派发任务
-TASK_CHANNEL = "sessions:new"
+# 全局任务频道：所有 pi-runtime 实例都订阅（无 sticky session 时使用）
+TASK_CHANNEL_GLOBAL = "sessions:new"
+# 实例专属任务频道：sticky session 模式下路由到特定实例
+TASK_CHANNEL_INSTANCE = "sessions:{instance_id}:new"
+# user → pi-runtime instance 的亲和映射，TTL 24h（用于 sticky session）
+USER_INSTANCE_KEY = "user:{user_id}:instance"
+USER_INSTANCE_TTL = 86400
 
 
 def _get_stream_key(session_id: str) -> str:
@@ -45,12 +50,44 @@ async def disconnect() -> None:
         logger.info("Redis 连接池已关闭")
 
 
+async def _get_user_instance(user_id: str) -> str | None:
+    """查询 user 是否已绑定到某个 pi-runtime 实例（sticky session）"""
+    client = get_redis()
+    return await client.get(USER_INSTANCE_KEY.format(user_id=user_id))
+
+
 async def publish_task(session_id: str, user_id: str, request: str) -> None:
-    """向 pi-runtime 发布新 session 任务"""
+    """
+    向 pi-runtime 发布新 session 任务。
+
+    Sticky session 路由逻辑：
+      1. 查询该 user 是否已绑定到某个 pi-runtime 实例
+      2. 若已绑定，发布到该实例专属频道（保证 workspace 连续性）
+      3. 若未绑定，发布到全局频道（由任意实例认领，认领时写入绑定关系）
+    """
     payload = json.dumps({"session_id": session_id, "user_id": user_id, "request": request})
     client = get_redis()
-    await client.publish(TASK_CHANNEL, payload)
-    logger.info("任务已发布到 Redis Pub/Sub: session=%s", session_id)
+
+    instance_id = await _get_user_instance(user_id)
+    if instance_id:
+        channel = TASK_CHANNEL_INSTANCE.format(instance_id=instance_id)
+        logger.info("sticky session 路由: user=%s → instance=%s session=%s", user_id, instance_id, session_id)
+    else:
+        channel = TASK_CHANNEL_GLOBAL
+        logger.info("全局路由（新用户或实例未知）: session=%s user=%s", session_id, user_id)
+
+    await client.publish(channel, payload)
+
+
+async def bind_user_to_instance(user_id: str, instance_id: str) -> None:
+    """
+    pi-runtime 实例认领任务后，将 user → instance 绑定关系写入 Redis。
+    由 pi-runtime 通过独立接口或消息回写；gateway 此处提供写入方法供统一管理。
+    """
+    client = get_redis()
+    key = USER_INSTANCE_KEY.format(user_id=user_id)
+    await client.setex(key, USER_INSTANCE_TTL, instance_id)
+    logger.info("user 实例绑定: user=%s → instance=%s TTL=%ds", user_id, instance_id, USER_INSTANCE_TTL)
 
 
 async def stream_session_output(
@@ -59,8 +96,8 @@ async def stream_session_output(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     从 Redis Stream 持续拉取 session 输出事件。
-    start_seq: Redis Stream 的消息 ID（"0" 表示从头开始，"$" 表示只拉新消息）
-    每次 XREAD 阻塞 sse_block_ms 毫秒，超时则 yield None（心跳）后继续。
+    start_seq: Redis Stream 的消息 ID（"0" 表示从头开始）
+    每次 XREAD 阻塞 sse_block_ms 毫秒，超时则 yield 心跳后继续。
     """
     client = get_redis()
     stream_key = _get_stream_key(session_id)
@@ -73,7 +110,6 @@ async def stream_session_output(
             count=50,
         )
         if not results:
-            # 超时未收到数据，发送心跳
             yield {"heartbeat": True}
             continue
 
@@ -82,6 +118,5 @@ async def stream_session_output(
                 last_id = msg_id
                 yield {"id": msg_id, **fields}
 
-                # 收到 done 事件，停止拉取
                 if fields.get("event_type") == "done":
                     return

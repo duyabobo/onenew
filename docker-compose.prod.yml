@@ -1,0 +1,51 @@
+# 生产集群 override 配置。使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --scale pi-runtime=3 -d
+#
+# 此文件只覆盖与集群部署相关的差异项，其余继承 docker-compose.yml。
+
+version: "3.9"
+
+services:
+  pi-runtime:
+    # 集群模式下 pi-runtime 可水平扩展。
+    # 所有实例挂载同一个 sandbox_workspaces（NFS/EFS），
+    # 任意实例都能读取任意 user 的 workspace，无需 sticky session 保证数据连续。
+    # （sticky session 仍作为性能优化：减少跨节点 NFS 读写竞争）
+    deploy:
+      replicas: 1               # 按需调整实例数
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      update_config:
+        parallelism: 1          # 滚动更新，每次更新 1 个实例
+        delay: 10s
+
+volumes:
+  # 覆盖为共享网络存储，所有 pi-runtime 节点挂载同一卷。
+  # 用户 workspace（文件、Python venv、pip 包等）存储在这里，跨节点可见。
+  #
+  # ── NFS 自建（在 NFS Server 上 export /data/pi-sandboxes）──────────────────
+  sandbox_workspaces:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER_ADDR},rw,nfsvers=4,hard,intr,timeo=600,retrans=3"
+      device: ":${NFS_EXPORT_PATH}"
+  #
+  # ── AWS EFS（将上面注释，取消下面注释）─────────────────────────────────────
+  # sandbox_workspaces:
+  #   driver: local
+  #   driver_opts:
+  #     type: nfs
+  #     o: "addr=${EFS_DNS_NAME},nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2"
+  #     device: ":/"
+  #
+  # ── 阿里云 NAS（将上面注释，取消下面注释）──────────────────────────────────
+  # sandbox_workspaces:
+  #   driver: local
+  #   driver_opts:
+  #     type: nfs
+  #     o: "addr=${NAS_SERVER_ADDR},rw,nfsvers=3,nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2"
+  #     device: ":${NAS_EXPORT_PATH}"

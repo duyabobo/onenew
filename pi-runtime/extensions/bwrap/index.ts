@@ -35,24 +35,27 @@ interface PiContext {
 
 declare const pi: PiContext;
 
-// 沙盒路径从 worker 注入的环境变量读取（进程启动时已确定，与 session 绑定）
-const sandboxWorkspace = process.env.PI_SANDBOX_WORKSPACE ?? "/workspace";
-const sandboxHome = process.env.PI_SANDBOX_HOME ?? "/root";
+/**
+ * 路径从 worker 注入的环境变量读取（进程启动时已绑定，与 session 一一对应）。
+ * 关键：这里是实际文件系统路径（非 /workspace 别名），
+ * 确保 pi 的 read/write/edit 工具（Node.js）和 bash 工具（bwrap）访问同一路径。
+ */
+const sandboxWorkspace = process.env.PI_SANDBOX_WORKSPACE ?? "";
+const sandboxHome = process.env.PI_SANDBOX_HOME ?? "";
+const sandboxTmp = process.env.PI_SANDBOX_TMP ?? "";
+
+if (!sandboxWorkspace || !sandboxHome) {
+  console.error("[bwrap] 警告: PI_SANDBOX_WORKSPACE 或 PI_SANDBOX_HOME 未设置，沙盒可能不生效");
+}
 
 function buildBwrapArgs(cmd: string): string[] {
   return [
-    // 系统目录只读挂载（提供二进制程序、Python 等运行时）
-    "--ro-bind", "/usr", "/usr",
-    "--ro-bind", "/lib", "/lib",
-    "--ro-bind", "/lib64", "/lib64",
-    "--ro-bind", "/bin", "/bin",
-    "--ro-bind", "/sbin", "/sbin",
-    "--ro-bind", "/etc/alternatives", "/etc/alternatives",
-    // session 专属可读写工作目录（文件修改持久化到宿主目录）
-    "--bind", sandboxWorkspace, "/workspace",
-    // session/user 专属 home 目录（bashrc、Python venv、pip 包等持久化）
-    "--bind", sandboxHome, "/root",
-    "--tmpfs", "/tmp",
+    // 根文件系统只读（提供系统工具、Python 等运行时）
+    "--ro-bind", "/", "/",
+    // 覆盖：workspace 和 home 可读写，路径内外一致（不使用别名）
+    "--bind", sandboxWorkspace, sandboxWorkspace,
+    "--bind", sandboxHome, sandboxHome,
+    ...(sandboxTmp ? ["--bind", sandboxTmp, sandboxTmp] : ["--tmpfs", "/tmp"]),
     "--proc", "/proc",
     "--dev", "/dev",
     // 禁止网络：命令无法发出任何网络请求
@@ -61,7 +64,7 @@ function buildBwrapArgs(cmd: string): string[] {
     "--unshare-pid",
     // 父进程（pi）退出时自动终止沙盒子进程
     "--die-with-parent",
-    "--chdir", "/workspace",
+    "--chdir", sandboxWorkspace,
     "--",
     "bash",
     "-c",
@@ -92,7 +95,7 @@ function runInBwrap(
   });
 }
 
-// 覆盖 pi 的内置 bash 工具，将所有 bash 调用路由到 bwrap 沙盒
+// ── bash 工具：路由到 bwrap 沙盒 ─────────────────────────────────────────────
 pi.registerTool("bash", async (input): Promise<PiToolResult> => {
   const cmd = input["command"] as string | undefined;
   if (!cmd) {
@@ -115,6 +118,34 @@ pi.registerTool("bash", async (input): Promise<PiToolResult> => {
   return { output: result.stdout };
 });
 
+// ── read/write/edit 工具：JS 层路径校验 ──────────────────────────────────────
+// 这三个工具在 Node.js 进程里直接执行（不经过 bwrap），
+// 用路径白名单防止 LLM 生成绝对路径（如 /etc/passwd）逃逸到 workspace 之外。
+
+function resolveAndGuard(rawPath: string): { safe: true; resolved: string } | { safe: false; reason: string } {
+  const { path: nodePath } = require("path") as typeof import("path");
+  const resolved = nodePath.resolve(sandboxWorkspace, rawPath);
+  const allowed = [sandboxWorkspace, sandboxHome].filter(Boolean);
+  const inBounds = allowed.some((base) => resolved.startsWith(base + "/") || resolved === base);
+  if (!inBounds) {
+    return { safe: false, reason: `路径越界: ${rawPath} → ${resolved}（只允许访问 workspace 和 home）` };
+  }
+  return { safe: true, resolved };
+}
+
+for (const toolName of ["read", "write", "edit"] as const) {
+  pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
+    const rawPath = (input["path"] ?? input["file_path"] ?? "") as string;
+    const check = resolveAndGuard(rawPath);
+    if (!check.safe) {
+      console.error(`[bwrap] 拦截越界文件操作 tool=${toolName} path=${rawPath}`);
+      return { output: check.reason, isError: true };
+    }
+    // 路径合法，交由 pi 默认实现处理（返回 undefined 触发 fallthrough）
+    return undefined as unknown as PiToolResult;
+  });
+}
+
 console.error(
-  `[bwrap] 沙盒扩展已就绪 workspace=${sandboxWorkspace} home=${sandboxHome}`
+  `[bwrap] 沙盒扩展已就绪 workspace=${sandboxWorkspace} home=${sandboxHome} tmp=${sandboxTmp}`
 );

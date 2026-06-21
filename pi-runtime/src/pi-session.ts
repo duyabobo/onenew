@@ -46,9 +46,10 @@ export async function runPiSession(
   return new Promise((resolve, reject) => {
     const piEnv = {
       ...process.env,
-      // 注入 sandbox 路径到 bwrap 扩展（扩展加载时从这里读取）
+      // 注入实际路径到 bwrap 扩展（路径内外一致，pi read/write/edit 工具和 bash 工具访问同一路径）
       PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
       PI_SANDBOX_HOME: sandboxPaths.home,
+      PI_SANDBOX_TMP: sandboxPaths.sessionTmp,
       // LLM 指向 admin 服务
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://admin:9000/v1",
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "pi-agent-internal",

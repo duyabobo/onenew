@@ -99,7 +99,8 @@ services:
 volumes:
   mongo_data:
   redis_data:
-  # 用户工作空间持久化卷（重要：不要随意删除此卷）
+  # 开发环境：local 驱动，数据在单机上。
+  # 生产集群：用 docker-compose.prod.yml override，换为 NFS/EFS 驱动。
   sandbox_workspaces:
 
 networks:
