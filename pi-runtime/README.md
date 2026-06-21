@@ -5,6 +5,7 @@
 Pi-Runtime 是平台的执行核心，负责：
 
 - 订阅 Redis Pub/Sub，消费 gateway 派发的 session 任务
+- 从 MongoDB 读取最新 MCP 配置，为每个 session 生成独立的 pi config 目录
 - 为每个 session 创建独立的 bwrap 沙盒（文件系统隔离）
 - 以 RPC 模式启动 pi agent，执行用户请求
 - 将 pi 生成的 token / 工具调用 / 结果流式推送到 Redis Stream
@@ -14,6 +15,7 @@ Pi-Runtime 是平台的执行核心，负责：
 - 对外暴露 HTTP 接口（纯消费者）
 - 用户认证 / session 创建（由 gateway 负责）
 - LLM 直连（通过 admin 代理）
+- 配置管理（由 admin 负责，pi-runtime 只读取）
 
 ---
 
@@ -23,13 +25,13 @@ Pi-Runtime 是平台的执行核心，负责：
 pi-runtime/
 ├── src/
 │   ├── worker.ts         主入口：Redis 订阅 + session 调度
-│   ├── pi-session.ts     启动 pi RPC 进程，解析 JSONL 输出
+│   ├── pi-session.ts     从 MongoDB 读 MCP 配置、启动 pi RPC 进程、解析 JSONL 输出
 │   ├── sandbox.ts        bwrap 沙盒生命周期（创建 / 执行 / 销毁）
 │   ├── output-stream.ts  Redis Stream XADD 输出推送
-│   └── mongo-client.ts   MongoDB session 状态更新
+│   └── mongo-client.ts   MongoDB session 状态更新 + MCP 配置读取
 └── extensions/
     ├── bwrap/            Pi 扩展：拦截 bash 工具调用，路由到 bwrap
-    └── mcp-servers/      MCP 工具服务器（http-client / database）
+    └── mcp-servers/      内置 MCP 工具服务器（http-client / database）
 ```
 
 ---
@@ -47,9 +49,10 @@ worker.ts: 收到任务 payload { session_id, user_id, request }
   ├─ 3. createSandbox → 创建 /data/sandboxes/users/{uid}/sessions/{sid}/
   │                       workspace/  home/  tmp/
   │
-  ├─ 4. runPiSession → 启动 pi --mode rpc 子进程
-  │       ├── 注入环境变量（PI_SANDBOX_WORKSPACE / HOME / TMP）
-  │       ├── 设置 CWD = workspace 目录
+  ├─ 4. runPiSession
+  │       ├── getMcpConfig() → 读 MongoDB configs.mcp（最新配置）
+  │       ├── 写 /tmp/pi-config/{sid}/mcp.json
+  │       ├── 启动 pi --mode rpc（PI_CODING_AGENT_DIR 指向独立 config 目录）
   │       ├── 发送 prompt → pi stdin
   │       └── 解析 pi stdout JSONL：
   │             text event      → XADD session:{id}:stream event_type=token
@@ -64,11 +67,40 @@ worker.ts: 收到任务 payload { session_id, user_id, request }
 
 ---
 
+## MCP 配置加载
+
+MCP 配置由 admin 服务管理，pi-runtime **直接从 MongoDB 读取**：
+
+```
+admin PUT /config/mcp → 写 MongoDB configs.mcp
+
+session 启动时（pi-session.ts）：
+  getMcpConfig()
+    → 读 MongoDB configs.mcp（每 session 独立读一次，拿到最新配置）
+    → 写 /tmp/pi-config/{session_id}/mcp.json
+    → 通过 PI_CODING_AGENT_DIR 让 pi 使用该 config 目录
+    → pi-mcp-adapter 从该目录读 mcp.json，按需启动 MCP server 进程
+```
+
+**每个 session 使用独立的 pi config 目录**（`/tmp/pi-config/{session_id}/`），避免并发 session 之间的配置文件冲突。
+
+内置 MCP Server：
+
+| MCP Server | 工具 | 网络访问 | 说明 |
+|-----------|------|---------|------|
+| filesystem | 文件读写 | 无 | 限制在 /workspace 目录 |
+| http-client | http_get / http_post | 有 | 运行在沙盒外，可访问外网 |
+| database | db_find / db_count | 有 | MongoDB 只读查询 |
+
+> MCP server 进程运行在 bwrap 沙盒**外**，可正常访问网络。
+
+---
+
 ## bwrap 沙盒
 
 ### 隔离粒度：session 级别
 
-每个 session 拥有完全独立的文件系统，不同 session（哪怕同一 user）互不可见：
+每个 session 拥有完全独立的文件系统，不同 session 互不可见：
 
 ```
 /data/sandboxes/users/{user_id}/sessions/{session_id}/
@@ -108,22 +140,6 @@ bwrap 内外使用**相同的绝对路径**（不用 `/workspace` 别名）：
 
 ---
 
-## MCP 工具
-
-pi 通过 `pi-mcp-adapter` 扩展调用外部工具（MCP 协议）。
-
-配置文件：`~/.pi/agent/mcp.json`（构建时从 `config/mcp.json` 复制）
-
-| MCP 服务器 | 工具 | 网络访问 | 说明 |
-|-----------|------|---------|------|
-| filesystem | 文件读写 | 无 | 限制在 /workspace 目录 |
-| http-client | http_get / http_post | 有 | 运行在沙盒外，可访问外网 |
-| database | db_find / db_count | 有 | MongoDB 只读查询 |
-
-> MCP 服务器作为独立进程运行，**不在 bwrap 沙盒内**，可正常访问网络。
-
----
-
 ## Sticky Session（集群路由优化）
 
 ```
@@ -135,14 +151,9 @@ pi 通过 `pi-mcp-adapter` 扩展调用外部工具（MCP 协议）。
 订阅两个频道：
   sessions:new              ← 新用户或未绑定实例的任务
   sessions:{instanceId}:new ← 已绑定到本实例的老用户任务
-
-Gateway 派发逻辑：
-  查到 user:alice:instance = node-1 → PUBLISH sessions:node-1:new
-  未查到                            → PUBLISH sessions:new（任意实例处理）
 ```
 
-Sticky session 是**性能优化**，减少 NFS 跨节点 IO 竞争。
-数据安全由共享存储（NFS/EFS）保证，即使路由到不同节点数据也不丢失。
+Sticky session 是**性能优化**（减少跨节点 NFS IO），数据安全由共享存储保证。
 
 ---
 
@@ -161,8 +172,6 @@ volumes:
       device: ":${NFS_EXPORT_PATH}"
 ```
 
-所有节点挂载路径均为 `/data/sandboxes/users/`，user 数据跨节点可见。
-
 ---
 
 ## 依赖关系
@@ -170,9 +179,9 @@ volumes:
 | 依赖 | 用途 | 方向 |
 |------|------|------|
 | Redis | 订阅任务 + 推送输出流 | 消费 + 写入 |
-| MongoDB | 更新 session 状态 | 写入 |
+| MongoDB | session 状态更新 + MCP 配置读取 | 读写 |
 | Admin | LLM 推理代理 | HTTP 调用 |
-| 共享存储卷 | 用户 workspace 持久化 | 读写 |
+| 共享存储卷 | session sandbox 数据 | 读写 |
 
 **不依赖**：gateway（gateway 依赖 pi-runtime，反向不成立）
 
@@ -200,4 +209,4 @@ ARG PI_VERSION=0.79.9
 RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 ```
 
-升级前需验证 bwrap 扩展兼容性，详见 [bwrap 扩展注释](../pi-runtime/extensions/bwrap/index.ts)。
+升级前需验证 bwrap 扩展兼容性，详见 [extensions/bwrap/index.ts](extensions/bwrap/index.ts)。

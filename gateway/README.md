@@ -11,6 +11,7 @@ Gateway 是整个平台对外的唯一入口，负责：
 **不负责**：
 - 执行 pi agent（由 pi-runtime 负责）
 - 调用 LLM（由 pi-runtime 通过 admin 负责）
+- 配置管理（由 admin 负责）
 - 文件系统操作（由 pi-runtime 内部处理）
 - bwrap 沙盒管理
 
@@ -75,7 +76,6 @@ PENDING → RUNNING → COMPLETED
 
 **断线重连示例：**
 ```
-# 客户端记录最后收到的 event id（即 Redis Stream ID）
 curl -N "http://localhost:8000/sessions/SESSION_ID/stream?last_seq=1718000000000-0"
 ```
 
