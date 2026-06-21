@@ -46,8 +46,7 @@ export async function runPiSession(
   return new Promise((resolve, reject) => {
     const piEnv = {
       ...process.env,
-      // 使 pi agent 将 bash 命令路由到 bwrap 沙盒
-      PI_SANDBOX_ROOT: sandboxPaths.root,
+      // 注入 sandbox 路径到 bwrap 扩展（扩展加载时从这里读取）
       PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
       PI_SANDBOX_HOME: sandboxPaths.home,
       // LLM 指向 admin 服务

@@ -34,7 +34,8 @@ async function processSession(payload: TaskPayload): Promise<void> {
     console.log(`[worker] 开始处理 session ${session_id} user=${user_id}`);
     await updateSessionStatus(session_id, "RUNNING");
 
-    const sandboxPaths = await createSandbox(session_id);
+    // userId 用于确定持久化工作空间路径，同一 user 跨 session 复用
+    const sandboxPaths = await createSandbox(user_id, session_id);
 
     await runPiSession(session_id, request, sandboxPaths, outputStream);
 
@@ -49,7 +50,8 @@ async function processSession(payload: TaskPayload): Promise<void> {
     await outputStream.pushDone().catch(() => {});
     await updateSessionStatus(session_id, "FAILED", { error: message });
   } finally {
-    await destroySandbox(session_id).catch((err) =>
+    // 只清理 session 级别的临时目录，user 的持久化 workspace 保留
+    await destroySandbox(user_id, session_id).catch((err) =>
       console.error(`[worker] 销毁沙盒失败: session=${session_id}`, err)
     );
     activeSessions.delete(session_id);

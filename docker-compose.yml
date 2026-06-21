@@ -79,11 +79,13 @@ services:
     environment:
       OPENAI_BASE_URL: "http://admin:9000/v1"
       OPENAI_API_KEY: "pi-agent-internal"
-      SANDBOX_ROOT: "/tmp/pi-sandbox"
+      SANDBOX_ROOT: "/data/sandboxes"
     # bwrap 需要 user namespace，privileged 模式提供必要的内核能力
     privileged: true
     volumes:
-      - sandbox_tmp:/tmp/pi-sandbox
+      # 持久化卷：每个 user 的 workspace/home 跨 session 保留
+      # 存储文件系统、Python venv、pip 包、.bashrc 等环境
+      - sandbox_workspaces:/data/sandboxes/users
     networks:
       - pi_net
     depends_on:
@@ -97,7 +99,8 @@ services:
 volumes:
   mongo_data:
   redis_data:
-  sandbox_tmp:
+  # 用户工作空间持久化卷（重要：不要随意删除此卷）
+  sandbox_workspaces:
 
 networks:
   pi_net:
