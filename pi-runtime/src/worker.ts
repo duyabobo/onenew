@@ -14,7 +14,7 @@
 import Redis from "ioredis";
 import os from "os";
 import { config } from "./config";
-import { connect as connectMongo, disconnect as disconnectMongo, updateSessionStatus } from "./mongo-client";
+import { connect as connectMongo, disconnect as disconnectMongo, updateSessionStatus, findOrphanedSessions } from "./mongo-client";
 import { connectRedis, disconnectRedis, getRedis, SessionOutputStream } from "./output-stream";
 import { createSandbox, destroySandbox } from "./sandbox";
 import { runPiSession } from "./pi-session";
@@ -129,12 +129,40 @@ async function startSubscriber(): Promise<Redis> {
   return subscriber;
 }
 
+/**
+ * 启动恢复：扫描 MongoDB 中所有孤儿 RUNNING/PENDING session，重新触发处理。
+ * 解决 pi-runtime 重启后 Redis Pub/Sub 消息丢失导致 session 永久卡死的问题。
+ */
+async function recoverOrphanedSessions(): Promise<void> {
+  const sessions = await findOrphanedSessions();
+  if (sessions.length === 0) {
+    console.log("[worker] 无孤儿 session，无需恢复");
+    return;
+  }
+
+  console.log(`[worker] 发现 ${sessions.length} 个孤儿 session，开始恢复...`);
+  for (const s of sessions) {
+    console.log(`[worker] 恢复孤儿 session: session=${s.session_id} user=${s.user_id}`);
+    processSession({
+      session_id: s.session_id,
+      user_id: s.user_id,
+      request: s.request,
+      skill_ids: s.skill_ids,
+    }).catch((err) =>
+      console.error(`[worker] 恢复 session 失败: session=${s.session_id}`, err)
+    );
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`[worker] pi-runtime 启动中... instance=${INSTANCE_ID}`);
 
   await connectMongo();
   await connectRedis();
   const subscriber = await startSubscriber();
+
+  // 订阅就绪后立即恢复孤儿 session（重启容错）
+  await recoverOrphanedSessions();
 
   console.log("[worker] pi-runtime 就绪，等待任务...");
 

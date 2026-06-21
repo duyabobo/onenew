@@ -83,5 +83,32 @@ export async function getMcpConfig(): Promise<McpConfig> {
   return rest as McpConfig;
 }
 
+// ── 启动恢复 ──────────────────────────────────────────────────────────────────
+
+export interface OrphanedSession {
+  session_id: string;
+  user_id: string;
+  request: string;
+  skill_ids: string[];
+}
+
+/**
+ * 查找所有处于 RUNNING 或 PENDING 状态的 session。
+ * pi-runtime 启动时调用，用于恢复因重启而丢失的孤儿任务。
+ */
+export async function findOrphanedSessions(): Promise<OrphanedSession[]> {
+  const docs = await getDb()
+    .collection("sessions")
+    .find({ status: { $in: [SESSION_STATUS.RUNNING, SESSION_STATUS.PENDING] } } as unknown as Filter<Document>)
+    .toArray();
+
+  return docs.map((doc) => ({
+    session_id: String(doc._id),
+    user_id: String(doc.user_id),
+    request: String(doc.request ?? ""),
+    skill_ids: Array.isArray(doc.skill_ids) ? (doc.skill_ids as string[]) : [],
+  }));
+}
+
 // Skill 由文件系统管理（/data/sandboxes/global/skills/ 和 users/{uid}/skills/）
 // pi-runtime 直接使用文件路径，不再从 MongoDB 读取 skill 内容
