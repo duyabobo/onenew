@@ -4,7 +4,7 @@
 
 ---
 
-## 整体架构（简要版）
+## 整体架构
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "linear"}}}%%
@@ -70,46 +70,6 @@ flowchart LR
 ```
 
 ---
-
-## 关键请求链路
-
-### 会话创建
-
-```
-用户 → POST /sessions { user_id, request, skill_ids }
-  → gateway 创建 session（MongoDB）
-  → PUBLISH sessions:new（Redis）
-  → 返回 session_id
-```
-
-### Pi Agent 执行
-
-```
-pi-runtime SUBSCRIBE sessions:new
-  → 读 MongoDB：MCP 配置
-  → 创建 bwrap 沙盒（per session）
-  → 软链 global + user skills 到 PI_CODING_AGENT_DIR/skills/
-  → 启动 pi --mode rpc
-      ├── 用户选了 skill：--no-skills --skill {path}（只披露选定范围）
-      ├── 未选 skill：pi 自动扫描，渐进式披露全量 skill
-      ├── bash 工具 → bwrap（禁网络）
-      └── MCP 工具 → pi-mcp-adapter → 按需启动 MCP Server 进程
-  → 每个输出事件 XADD stream（Redis）
-  → 任务完成：销毁沙盒
-```
-
-### SSE 流式拉取
-
-```
-用户 → GET /sessions/{id}/stream
-  → gateway 读 MongoDB events_snapshot（断线重连回放）
-  → XREAD BLOCK stream（持续拉取）
-  → 逐事件推送 SSE
-```
-
----
-
-## 服务一览
 
 | 服务 | 端口 | 技术栈 | 职责 |
 |------|------|--------|------|
