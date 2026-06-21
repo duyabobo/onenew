@@ -30,7 +30,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return resp.json();
 }
 
-// 所有 config API 请求到 admin 服务（/config/* → admin:9000）
+// /config/llm → llm-proxy:9001（由 llm-proxy 持久化并热更新内存）
+// /config/mcp、/config/skills → admin:9000
 export const configApi = {
   getLlm: () => request<LlmConfig | null>("/config/llm"),
   saveLlm: (cfg: LlmConfig) =>
