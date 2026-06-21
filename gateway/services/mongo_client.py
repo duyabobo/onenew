@@ -81,7 +81,10 @@ async def get_recent_sessions(user_id: str, limit: int = 20) -> list[SessionSumm
         # 只查需要的字段，排除大字段 events_snapshot
         {"_id": 1, "status": 1, "request": 1, "created_at": 1, "completed_at": 1},
     ).sort("created_at", -1).limit(limit)
-    return [SessionSummary(**raw) async for raw in cursor]
+    return [
+        SessionSummary(session_id=str(raw["_id"]), **{k: v for k, v in raw.items() if k != "_id"})
+        async for raw in cursor
+    ]
 
 
 async def append_event_snapshot(session_id: str, event: dict[str, Any]) -> None:

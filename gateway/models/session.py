@@ -43,14 +43,11 @@ class CreateSessionResponse(BaseModel):
 
 class SessionSummary(BaseModel):
     """用于历史列表的轻量摘要（不含 events_snapshot 全量数据）"""
-    session_id: str = Field(alias="_id")
+    session_id: str
     status: SessionStatus
     request: str
     created_at: datetime
     completed_at: datetime | None = None
-
-    class Config:
-        populate_by_name = True
 
 
 class SessionStreamEvent(BaseModel):
