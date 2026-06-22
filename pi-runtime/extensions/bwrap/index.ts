@@ -6,212 +6,208 @@
  * ═══════════════════════════════════════════════════════════════
  * 本文件依赖以下 pi Extension API，升级 pi 后需验证这些点：
  *
- * 1. pi.registerTool(name, handler)
- *    用于覆盖 pi 内置工具。若 pi 改名此方法，需同步修改。
+ * 1. export default function(pi: ExtensionAPI)
+ *    pi 扩展必须导出 default 函数并接收 pi 作为参数（非全局变量）。
  *    当前使用版本：pi@0.79.x
  *
- * 2. 工具名称（如 pi 重命名内置工具，需同步修改）：
- *    "bash"  → pi 执行 shell 命令的工具
- *    "read"  → pi 读文件工具
- *    "write" → pi 写文件工具
- *    "edit"  → pi 编辑文件工具
- *    "find"  → pi glob 文件搜索工具
- *    "grep"  → pi 内容搜索工具（底层用 ripgrep）
- *    "ls"    → pi 目录列举工具
+ * 2. pi.registerTool({ name, execute, ... })
+ *    接收工具定义对象，通过 spread createXxxTool() 继承默认行为。
  *
- * 3. handler 返回 undefined 触发 fallthrough（交由 pi 默认实现处理）
- *    用于文件工具路径校验通过后的透传。
- *    若 pi 改变此语义，需改为自行实现文件读写。
+ * 3. createBashTool / createReadTool / createWriteTool / createEditTool
+ *    createFindTool / createGrepTool / createLsTool
+ *    从 @earendil-works/pi-coding-agent 导入，用于创建带 operations 覆盖的工具。
+ *
+ * 4. execute 返回 { content: [{ type: "text", text }] }
  *
  * 升级 pi 时的验证步骤：
  *   1. docker build（会在构建时暴露 npm 安装错误）
- *   2. 启动容器，跑一个简单任务，确认 bash 命令走了 bwrap
- *   3. 确认 read/write/find/grep/ls 工具的路径校验正常
- *   4. 确认越界路径被拦截（如 path=/etc 应返回错误）
+ *   2. 启动容器，确认 bwrap.ready 文件被写入（/tmp/pi-config/{sessionId}/bwrap.ready）
+ *   3. 确认 bash 命令在沙盒内执行（curl 等网络命令应失败）
+ *   4. 确认 read/write/find/grep/ls 越界路径被拦截
  * ═══════════════════════════════════════════════════════════════
  *
  * 沙盒特性（由 worker 在启动 pi 进程前注入环境变量）：
- *   PI_SANDBOX_WORKSPACE → session 专属工作目录（bwrap 内外路径一致）
- *   PI_SANDBOX_HOME      → session 专属 home（bwrap 内外路径一致）
+ *   PI_SANDBOX_WORKSPACE → session 专属工作目录
+ *   PI_SANDBOX_HOME      → session 专属 home
  *   PI_SANDBOX_TMP       → session 临时目录
  *   --unshare-net        → 禁止网络访问
  *   --unshare-pid        → 独立 PID 空间
+ *   --tmpfs sandboxRoot  → 对沙盒内隐藏其他 session/user 目录
  */
 
-const { spawn } = require("child_process") as typeof import("child_process");
+import type { BashOperations, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  createBashTool,
+  createEditTool,
+  createFindTool,
+  createGrepTool,
+  createLsTool,
+  createReadTool,
+  createWriteTool,
+} from "@earendil-works/pi-coding-agent";
+import { writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { spawn } from "node:child_process";
 
-// ── pi Extension API 类型声明 ──────────────────────────────────────────────────
-// 如果 pi 升级后 API 变化，只需修改这里的类型声明和下方的 pi.registerTool 调用。
-interface PiToolHandler {
-  (input: Record<string, unknown>): Promise<PiToolResult>;
-}
-
-interface PiToolResult {
-  output: string;
-  isError?: boolean;
-}
-
-interface PiContext {
-  registerTool(name: string, handler: PiToolHandler): void;
-}
-
-declare const pi: PiContext;
-
-/**
- * 路径从 worker 注入的环境变量读取（进程启动时已绑定，与 session 一一对应）。
- * 关键：这里是实际文件系统路径（非 /workspace 别名），
- * 确保 pi 的 read/write/edit 工具（Node.js）和 bash 工具（bwrap）访问同一路径。
- */
 const sandboxRoot = process.env.PI_SANDBOX_ROOT ?? "/data/sandboxes";
 const sandboxWorkspace = process.env.PI_SANDBOX_WORKSPACE ?? "";
 const sandboxHome = process.env.PI_SANDBOX_HOME ?? "";
 const sandboxTmp = process.env.PI_SANDBOX_TMP ?? "";
+const piCodingAgentDir = process.env.PI_CODING_AGENT_DIR ?? "";
 
-// 安全关键校验：沙盒路径环境变量必须由 worker 注入，缺失说明运行上下文异常。
-// fail-closed：阻断所有工具调用，避免 pi 在无路径约束的状态下操作文件系统。
-const SANDBOX_MISCONFIGURED = !sandboxWorkspace || !sandboxHome;
-if (SANDBOX_MISCONFIGURED) {
-  console.error("[bwrap] 严重错误: PI_SANDBOX_WORKSPACE 或 PI_SANDBOX_HOME 未设置，所有工具调用将被拒绝（fail-closed）");
-}
+// ── bwrap 参数构造 ────────────────────────────────────────────────────────────
 
 function buildBwrapArgs(cmd: string): string[] {
   return [
-    // 根文件系统只读（提供系统工具、Python 等运行时）
     "--ro-bind", "/", "/",
-    // 用空 tmpfs 覆盖整个 sandbox 根目录，隐藏其他所有 session/user 的数据，防止跨 session 读取
+    // 用空 tmpfs 覆盖整个 sandbox 根目录，对 bwrap 内隐藏其他 session/user 数据
     "--tmpfs", sandboxRoot,
-    // 只将当前 session 的目录 bind 回来（可读写），路径内外一致
     "--bind", sandboxWorkspace, sandboxWorkspace,
     "--bind", sandboxHome, sandboxHome,
     ...(sandboxTmp ? ["--bind", sandboxTmp, sandboxTmp] : ["--tmpfs", "/tmp"]),
     "--proc", "/proc",
     "--dev", "/dev",
-    // 禁止网络：命令无法发出任何网络请求
     "--unshare-net",
-    // 独立 PID 空间：命令看不到其他 session 的进程
     "--unshare-pid",
-    // 父进程（pi）退出时自动终止沙盒子进程
     "--die-with-parent",
     "--chdir", sandboxWorkspace,
-    "--",
-    "bash",
-    "-c",
-    cmd,
+    "--", "bash", "-c", cmd,
   ];
 }
 
-function runInBwrap(
-  cmd: string
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    const args = buildBwrapArgs(cmd);
-    const proc = spawn("bwrap", args, { stdio: ["ignore", "pipe", "pipe"] });
+/**
+ * 实现 BashOperations 接口，将命令路由到 bwrap 沙盒执行。
+ * onData 流式传递输出，与 pi 的默认实现保持一致。
+ */
+function createBwrapBashOperations(): BashOperations {
+  return {
+    async exec(command, _cwd, { onData, signal, timeout }) {
+      return new Promise((resolve, reject) => {
+        const args = buildBwrapArgs(command);
+        const child = spawn("bwrap", args, { stdio: ["ignore", "pipe", "pipe"] });
 
-    let stdout = "";
-    let stderr = "";
+        let timedOut = false;
+        let timeoutHandle: NodeJS.Timeout | undefined;
 
-    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+        if (timeout !== undefined && timeout > 0) {
+          timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, timeout * 1000);
+        }
 
-    proc.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
+        child.stdout?.on("data", onData);
+        child.stderr?.on("data", onData);
 
-    proc.on("error", (err) => {
-      resolve({ stdout: "", stderr: `bwrap 启动失败: ${err.message}`, exitCode: 1 });
-    });
-  });
+        const onAbort = () => child.kill("SIGKILL");
+        signal?.addEventListener("abort", onAbort, { once: true });
+
+        child.on("error", (err) => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          reject(err);
+        });
+
+        child.on("close", (code) => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          signal?.removeEventListener("abort", onAbort);
+          if (signal?.aborted) {
+            reject(new Error("aborted"));
+          } else if (timedOut) {
+            reject(new Error(`timeout:${timeout}`));
+          } else {
+            resolve({ exitCode: code ?? 1 });
+          }
+        });
+      });
+    },
+  };
 }
 
-// ── bash 工具：路由到 bwrap 沙盒 ─────────────────────────────────────────────
-pi.registerTool("bash", async (input): Promise<PiToolResult> => {
-  if (SANDBOX_MISCONFIGURED) {
-    return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），bash 工具已禁用", isError: true };
-  }
-  const cmd = input["command"] as string | undefined;
-  if (!cmd) {
-    return { output: "错误：bash 工具调用缺少 command 参数", isError: true };
-  }
+// ── 路径白名单校验 ────────────────────────────────────────────────────────────
 
-  console.error(`[bwrap] 沙盒执行: ${cmd.slice(0, 120)}`);
-  const result = await runInBwrap(cmd);
-
-  if (result.exitCode !== 0) {
-    const combined = [
-      result.stdout,
-      result.stderr ? `stderr: ${result.stderr}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    return { output: combined || `命令退出码: ${result.exitCode}`, isError: true };
-  }
-
-  return { output: result.stdout };
-});
-
-// ── 文件操作工具统一路径校验 ─────────────────────────────────────────────────
-// read/write/edit/find/grep/ls 均在 Node.js 进程里直接执行（不经过 bwrap），
-// 用路径白名单防止 LLM 生成绝对路径（如 /etc/passwd）逃逸到 workspace 之外。
-
-function resolveAndGuard(rawPath: string): { safe: true; resolved: string } | { safe: false; reason: string } {
-  const { path: nodePath } = require("path") as typeof import("path");
-  const resolved = nodePath.resolve(sandboxWorkspace, rawPath);
+function guardPath(rawPath: string): { safe: true } | { safe: false; reason: string } {
+  const resolved = resolve(sandboxWorkspace, rawPath);
   const allowed = [sandboxWorkspace, sandboxHome].filter(Boolean);
   const inBounds = allowed.some((base) => resolved.startsWith(base + "/") || resolved === base);
   if (!inBounds) {
     return { safe: false, reason: `路径越界: ${rawPath} → ${resolved}（只允许访问 workspace 和 home）` };
   }
-  return { safe: true, resolved };
+  return { safe: true };
 }
 
-// read/write/edit：必须提供路径，且路径必须在白名单内
-for (const toolName of ["read", "write", "edit"] as const) {
-  pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
-    if (SANDBOX_MISCONFIGURED) {
-      return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），文件操作已禁用", isError: true };
-    }
-    const rawPath = (input["path"] ?? input["file_path"] ?? "") as string;
-    const check = resolveAndGuard(rawPath);
-    if (!check.safe) {
-      console.error(`[bwrap] 拦截越界文件操作 tool=${toolName} path=${rawPath}`);
-      return { output: check.reason, isError: true };
-    }
-    // 路径合法，交由 pi 默认实现处理（返回 undefined 触发 fallthrough）
-    return undefined as unknown as PiToolResult;
-  });
+function makeErrorResult(text: string) {
+  return { content: [{ type: "text" as const, text }] };
 }
 
-// find/grep/ls：未指定 path 时 pi 默认在 cwd（workspace）内操作，安全，直接 fallthrough。
-// 指定了 path 时必须校验，防止跨用户目录遍历（如 path="/data/sandboxes" 可枚举所有用户）。
-for (const toolName of ["find", "grep", "ls"] as const) {
-  pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
-    if (SANDBOX_MISCONFIGURED) {
-      return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），文件操作已禁用", isError: true };
-    }
-    const rawPath = (input["path"] ?? "") as string;
-    if (!rawPath) {
-      return undefined as unknown as PiToolResult;
-    }
-    const check = resolveAndGuard(rawPath);
-    if (!check.safe) {
-      console.error(`[bwrap] 拦截越界文件操作 tool=${toolName} path=${rawPath}`);
-      return { output: check.reason, isError: true };
-    }
-    return undefined as unknown as PiToolResult;
-  });
-}
+// ── 扩展入口 ─────────────────────────────────────────────────────────────────
 
-console.error(
-  `[bwrap] 沙盒扩展已就绪 workspace=${sandboxWorkspace} home=${sandboxHome} tmp=${sandboxTmp}`
-);
+export default function (pi: ExtensionAPI) {
+  // 安全关键校验：环境变量未注入说明运行上下文异常，抛错阻止扩展注册（fail-closed）。
+  // 扩展抛错 → bwrap.ready 文件不会被写入 → pi-session.ts 检测到并终止 session。
+  if (!sandboxWorkspace || !sandboxHome) {
+    throw new Error(
+      "[bwrap] 严重错误: PI_SANDBOX_WORKSPACE 或 PI_SANDBOX_HOME 未设置，" +
+      "拒绝注册工具（fail-closed）。请检查 worker 是否正确注入了沙盒环境变量。"
+    );
+  }
 
-// 向 PI_CODING_AGENT_DIR 写入就绪标记文件，供 pi-session.ts 做可靠的启动校验。
-// 必须在所有 registerTool 调用完成后写入，确保"文件存在 = 所有工具保护已注册"。
-const { writeFileSync } = require("fs") as typeof import("fs");
-const { join: pathJoin } = require("path") as typeof import("path");
-const agentDir = process.env.PI_CODING_AGENT_DIR;
-if (agentDir) {
-  writeFileSync(pathJoin(agentDir, "bwrap.ready"), "1", { flag: "w" });
-} else {
-  console.error("[bwrap] 警告: PI_CODING_AGENT_DIR 未设置，无法写入就绪标记文件");
+  // bash：完全替换为 bwrap 沙盒执行
+  const bwrapBash = createBashTool(sandboxWorkspace, { operations: createBwrapBashOperations() });
+  pi.registerTool({ ...bwrapBash, label: "bash (bwrap sandbox)" });
+
+  // read/write/edit：路径白名单校验，通过后 fallthrough 到 pi 默认实现
+  for (const [toolName, createTool] of [
+    ["read",  createReadTool],
+    ["write", createWriteTool],
+    ["edit",  createEditTool],
+  ] as const) {
+    const defaultTool = createTool(sandboxWorkspace);
+    pi.registerTool({
+      ...defaultTool,
+      execute: async (id, params, signal, onUpdate, ctx) => {
+        const rawPath = ((params as Record<string, unknown>)["path"] ?? "") as string;
+        if (rawPath) {
+          const check = guardPath(rawPath);
+          if (!check.safe) {
+            console.error(`[bwrap] 拦截越界 tool=${toolName} path=${rawPath}`);
+            return makeErrorResult(check.reason);
+          }
+        }
+        return defaultTool.execute(id, params, signal, onUpdate, ctx);
+      },
+    });
+  }
+
+  // find/grep/ls：未指定 path 时默认在 cwd（workspace）内搜索，安全；指定 path 时做白名单校验
+  for (const [toolName, createTool] of [
+    ["find", createFindTool],
+    ["grep", createGrepTool],
+    ["ls",   createLsTool],
+  ] as const) {
+    const defaultTool = createTool(sandboxWorkspace);
+    pi.registerTool({
+      ...defaultTool,
+      execute: async (id, params, signal, onUpdate, ctx) => {
+        const rawPath = ((params as Record<string, unknown>)["path"] ?? "") as string;
+        if (rawPath) {
+          const check = guardPath(rawPath);
+          if (!check.safe) {
+            console.error(`[bwrap] 拦截越界 tool=${toolName} path=${rawPath}`);
+            return makeErrorResult(check.reason);
+          }
+        }
+        return defaultTool.execute(id, params, signal, onUpdate, ctx);
+      },
+    });
+  }
+
+  // 就绪标记文件：必须在所有 registerTool 调用之后写入。
+  // "文件存在" = 扩展完整初始化，所有工具保护已注册。
+  // pi-session.ts 依赖此文件做 fail-closed 启动校验。
+  if (piCodingAgentDir) {
+    writeFileSync(join(piCodingAgentDir, "bwrap.ready"), "1", { flag: "w" });
+    console.error(`[bwrap] 沙盒扩展已就绪 workspace=${sandboxWorkspace} home=${sandboxHome} tmp=${sandboxTmp}`);
+  } else {
+    console.error("[bwrap] 警告: PI_CODING_AGENT_DIR 未设置，无法写入就绪标记文件");
+  }
 }
