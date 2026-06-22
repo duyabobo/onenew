@@ -15,16 +15,19 @@
  *    "read"  → pi 读文件工具
  *    "write" → pi 写文件工具
  *    "edit"  → pi 编辑文件工具
+ *    "find"  → pi glob 文件搜索工具
+ *    "grep"  → pi 内容搜索工具（底层用 ripgrep）
+ *    "ls"    → pi 目录列举工具
  *
  * 3. handler 返回 undefined 触发 fallthrough（交由 pi 默认实现处理）
- *    用于 read/write/edit 路径校验通过后的透传。
+ *    用于文件工具路径校验通过后的透传。
  *    若 pi 改变此语义，需改为自行实现文件读写。
  *
  * 升级 pi 时的验证步骤：
  *   1. docker build（会在构建时暴露 npm 安装错误）
  *   2. 启动容器，跑一个简单任务，确认 bash 命令走了 bwrap
- *   3. 确认 read/write 工具的路径校验正常
- *   4. 确认越界路径被拦截
+ *   3. 确认 read/write/find/grep/ls 工具的路径校验正常
+ *   4. 确认越界路径被拦截（如 path=/etc 应返回错误）
  * ═══════════════════════════════════════════════════════════════
  *
  * 沙盒特性（由 worker 在启动 pi 进程前注入环境变量）：
@@ -140,8 +143,8 @@ pi.registerTool("bash", async (input): Promise<PiToolResult> => {
   return { output: result.stdout };
 });
 
-// ── read/write/edit 工具：JS 层路径校验 ──────────────────────────────────────
-// 这三个工具在 Node.js 进程里直接执行（不经过 bwrap），
+// ── 文件操作工具统一路径校验 ─────────────────────────────────────────────────
+// read/write/edit/find/grep/ls 均在 Node.js 进程里直接执行（不经过 bwrap），
 // 用路径白名单防止 LLM 生成绝对路径（如 /etc/passwd）逃逸到 workspace 之外。
 
 function resolveAndGuard(rawPath: string): { safe: true; resolved: string } | { safe: false; reason: string } {
@@ -155,6 +158,7 @@ function resolveAndGuard(rawPath: string): { safe: true; resolved: string } | { 
   return { safe: true, resolved };
 }
 
+// read/write/edit：必须提供路径，且路径必须在白名单内
 for (const toolName of ["read", "write", "edit"] as const) {
   pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
     const rawPath = (input["path"] ?? input["file_path"] ?? "") as string;
@@ -164,6 +168,23 @@ for (const toolName of ["read", "write", "edit"] as const) {
       return { output: check.reason, isError: true };
     }
     // 路径合法，交由 pi 默认实现处理（返回 undefined 触发 fallthrough）
+    return undefined as unknown as PiToolResult;
+  });
+}
+
+// find/grep/ls：未指定 path 时 pi 默认在 cwd（workspace）内操作，安全，直接 fallthrough。
+// 指定了 path 时必须校验，防止跨用户目录遍历（如 path="/data/sandboxes" 可枚举所有用户）。
+for (const toolName of ["find", "grep", "ls"] as const) {
+  pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
+    const rawPath = (input["path"] ?? "") as string;
+    if (!rawPath) {
+      return undefined as unknown as PiToolResult;
+    }
+    const check = resolveAndGuard(rawPath);
+    if (!check.safe) {
+      console.error(`[bwrap] 拦截越界文件操作 tool=${toolName} path=${rawPath}`);
+      return { output: check.reason, isError: true };
+    }
     return undefined as unknown as PiToolResult;
   });
 }
