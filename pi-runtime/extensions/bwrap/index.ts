@@ -38,7 +38,7 @@
  *   --unshare-pid        → 独立 PID 空间
  */
 
-import { spawn } from "child_process";
+const { spawn } = require("child_process") as typeof import("child_process");
 
 // ── pi Extension API 类型声明 ──────────────────────────────────────────────────
 // 如果 pi 升级后 API 变化，只需修改这里的类型声明和下方的 pi.registerTool 调用。

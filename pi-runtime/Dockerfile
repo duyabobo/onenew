@@ -20,7 +20,7 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION
 
 # 安装 pi-mcp-adapter 插件（pi 调用 MCP 服务的唯一社区适配器）
 # 等效于交互式环境下执行 `pi install npm:pi-mcp-adapter`
-# 原理：npm pack 下载 tarball → 解压到 pi extensions 目录，pi 启动时自动加载
+# 原理：npm pack 下载 tarball → 解压到 pi extensions 目录 → 安装依赖（含 @modelcontextprotocol/ext-apps）
 RUN mkdir -p /root/.pi/agent/extensions && \
     cd /tmp && \
     npm pack pi-mcp-adapter && \
@@ -28,7 +28,9 @@ RUN mkdir -p /root/.pi/agent/extensions && \
     tar -xzf pi-mcp-adapter-*.tgz \
         -C /root/.pi/agent/extensions/pi-mcp-adapter \
         --strip-components=1 && \
-    rm /tmp/pi-mcp-adapter-*.tgz
+    rm /tmp/pi-mcp-adapter-*.tgz && \
+    cd /root/.pi/agent/extensions/pi-mcp-adapter && \
+    npm install --omit=dev
 
 WORKDIR /app
 
