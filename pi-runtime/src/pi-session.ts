@@ -142,6 +142,12 @@ async function setupPiConfigDir(
   // 必须将 /root/.pi/agent/extensions/ 下所有扩展软链接到此目录，否则：
   //   - bwrap 扩展不加载 → bash 工具静默退化为无沙盒的直接执行（有网络、无隔离）
   //   - pi-mcp-adapter 不加载 → MCP 工具全部失效
+  // PI_CODING_AGENT_DIR 覆盖了 pi 默认的 ~/.pi/agent 路径，pi 会去 session 目录下找 extensions/。
+  // 必须将 /root/.pi/agent/extensions/ 下所有扩展软链接到此目录，否则：
+  //   - bwrap 扩展不加载 → bash 工具静默退化为无沙盒的直接执行（有网络、无隔离）
+  //   - pi-mcp-adapter 不加载 → MCP 工具全部失效
+  // bwrap 扩展是安全关键组件，链接失败直接抛错终止 session（fail-closed），
+  // 宁可 session 失败也不能让 pi 在无沙盒状态下运行。
   const defaultExtensionsDir = "/root/.pi/agent/extensions";
   const piExtensionsDir = join(piConfigDir, "extensions");
   await mkdir(piExtensionsDir, { recursive: true });
@@ -152,7 +158,18 @@ async function setupPiConfigDir(
       console.error(`[pi-session] session=${sessionId}: 扩展 "${entry.name}" 链接失败:`, err.message);
     });
   }
-  console.log(`[pi-session] session=${sessionId}: 已链接 ${extensionEntries.length} 个 pi 扩展`);
+
+  // 安全关键校验：bwrap 扩展必须存在，否则 bash 工具会在无沙盒状态下运行
+  const { access } = await import("fs/promises");
+  const bwrapExtensionPath = join(piExtensionsDir, "bwrap");
+  await access(bwrapExtensionPath).catch(() => {
+    throw new Error(
+      `[pi-session] bwrap 扩展未就绪: ${bwrapExtensionPath} 不存在。` +
+      `bash 工具将无沙盒防护，session 终止（fail-closed）。` +
+      `请检查 Dockerfile 是否正确安装了 bwrap 扩展到 ${defaultExtensionsDir}/bwrap`
+    );
+  });
+  console.log(`[pi-session] session=${sessionId}: 已链接 ${extensionEntries.length} 个 pi 扩展，bwrap 扩展已就绪`);
 
   // 将 global skills 和 user skills 软链接到 pi config skills 目录
   for (const [srcRoot, prefix] of [[globalSkillsRoot, "g"], [userSkillsRoot, "u"]] as const) {
@@ -247,6 +264,10 @@ export async function runPiSession(
 
     console.log(`[pi-session] session ${sessionId}: pi 进程已启动 pid=${piProcess.pid}`);
 
+    // bwrap 就绪标记文件路径（由扩展在所有 registerTool 完成后写入）
+    const bwrapReadyFile = join(piConfigDir, "bwrap.ready");
+    let bwrapReadyConfirmed = false;
+
     // 逐行解析 pi 的 JSONL 输出
     const rl = createInterface({ input: piProcess.stdout! });
     let lineCount = 0;
@@ -266,6 +287,25 @@ export async function runPiSession(
         console.log(`[pi-session] session ${sessionId}: 收到 pi 首条消息 type=${msg.type}`);
       }
 
+      // bwrap 就绪阻断检查：在 pi 接受 prompt 的瞬间（response.success）校验标记文件。
+      // 扩展在 pi 启动时同步加载，写文件先于任何 prompt 处理，此时检查是可靠的。
+      // 未就绪 → fail-closed：终止 session，拒绝在无沙盒状态下执行任务。
+      const responseEvent = msg as PiCommandResponse;
+      if (msg.type === "response" && responseEvent.success && !bwrapReadyConfirmed) {
+        const { access: fsAccess } = await import("fs/promises");
+        const ready = await fsAccess(bwrapReadyFile).then(() => true).catch(() => false);
+        if (!ready) {
+          const errMsg = `bwrap 沙盒扩展未就绪（标记文件 ${bwrapReadyFile} 不存在），session 终止（fail-closed）`;
+          console.error(`[pi-session] session ${sessionId}: ${errMsg}`);
+          await outputStream.pushError(errMsg);
+          await outputStream.pushDone();
+          piProcess.stdin!.end();
+          return;
+        }
+        bwrapReadyConfirmed = true;
+        console.log(`[pi-session] session ${sessionId}: bwrap 沙盒扩展已确认就绪`);
+      }
+
       const shouldStop = await handlePiEvent(msg, sessionId, outputStream);
       if (shouldStop) {
         console.log(`[pi-session] session ${sessionId}: 收到终止事件，关闭 stdin，共 ${lineCount} 条消息`);
@@ -274,9 +314,9 @@ export async function runPiSession(
     });
 
     piProcess.stderr!.on("data", (chunk: Buffer) => {
-      const text = chunk.toString().trim();
-      if (text) {
-        console.error(`[pi-session] session ${sessionId} pi stderr: ${text}`);
+      const trimmed = chunk.toString().trim();
+      if (trimmed) {
+        console.error(`[pi-session] session ${sessionId} pi stderr: ${trimmed}`);
       }
     });
 

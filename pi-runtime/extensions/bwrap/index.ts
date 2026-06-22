@@ -67,8 +67,11 @@ const sandboxWorkspace = process.env.PI_SANDBOX_WORKSPACE ?? "";
 const sandboxHome = process.env.PI_SANDBOX_HOME ?? "";
 const sandboxTmp = process.env.PI_SANDBOX_TMP ?? "";
 
-if (!sandboxWorkspace || !sandboxHome) {
-  console.error("[bwrap] 警告: PI_SANDBOX_WORKSPACE 或 PI_SANDBOX_HOME 未设置，沙盒可能不生效");
+// 安全关键校验：沙盒路径环境变量必须由 worker 注入，缺失说明运行上下文异常。
+// fail-closed：阻断所有工具调用，避免 pi 在无路径约束的状态下操作文件系统。
+const SANDBOX_MISCONFIGURED = !sandboxWorkspace || !sandboxHome;
+if (SANDBOX_MISCONFIGURED) {
+  console.error("[bwrap] 严重错误: PI_SANDBOX_WORKSPACE 或 PI_SANDBOX_HOME 未设置，所有工具调用将被拒绝（fail-closed）");
 }
 
 function buildBwrapArgs(cmd: string): string[] {
@@ -122,6 +125,9 @@ function runInBwrap(
 
 // ── bash 工具：路由到 bwrap 沙盒 ─────────────────────────────────────────────
 pi.registerTool("bash", async (input): Promise<PiToolResult> => {
+  if (SANDBOX_MISCONFIGURED) {
+    return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），bash 工具已禁用", isError: true };
+  }
   const cmd = input["command"] as string | undefined;
   if (!cmd) {
     return { output: "错误：bash 工具调用缺少 command 参数", isError: true };
@@ -161,6 +167,9 @@ function resolveAndGuard(rawPath: string): { safe: true; resolved: string } | { 
 // read/write/edit：必须提供路径，且路径必须在白名单内
 for (const toolName of ["read", "write", "edit"] as const) {
   pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
+    if (SANDBOX_MISCONFIGURED) {
+      return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），文件操作已禁用", isError: true };
+    }
     const rawPath = (input["path"] ?? input["file_path"] ?? "") as string;
     const check = resolveAndGuard(rawPath);
     if (!check.safe) {
@@ -176,6 +185,9 @@ for (const toolName of ["read", "write", "edit"] as const) {
 // 指定了 path 时必须校验，防止跨用户目录遍历（如 path="/data/sandboxes" 可枚举所有用户）。
 for (const toolName of ["find", "grep", "ls"] as const) {
   pi.registerTool(toolName, async (input): Promise<PiToolResult> => {
+    if (SANDBOX_MISCONFIGURED) {
+      return { output: "沙盒未正确配置（PI_SANDBOX_WORKSPACE 未设置），文件操作已禁用", isError: true };
+    }
     const rawPath = (input["path"] ?? "") as string;
     if (!rawPath) {
       return undefined as unknown as PiToolResult;
@@ -192,3 +204,14 @@ for (const toolName of ["find", "grep", "ls"] as const) {
 console.error(
   `[bwrap] 沙盒扩展已就绪 workspace=${sandboxWorkspace} home=${sandboxHome} tmp=${sandboxTmp}`
 );
+
+// 向 PI_CODING_AGENT_DIR 写入就绪标记文件，供 pi-session.ts 做可靠的启动校验。
+// 必须在所有 registerTool 调用完成后写入，确保"文件存在 = 所有工具保护已注册"。
+const { writeFileSync } = require("fs") as typeof import("fs");
+const { join: pathJoin } = require("path") as typeof import("path");
+const agentDir = process.env.PI_CODING_AGENT_DIR;
+if (agentDir) {
+  writeFileSync(pathJoin(agentDir, "bwrap.ready"), "1", { flag: "w" });
+} else {
+  console.error("[bwrap] 警告: PI_CODING_AGENT_DIR 未设置，无法写入就绪标记文件");
+}
