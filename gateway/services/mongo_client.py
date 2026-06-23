@@ -39,12 +39,14 @@ async def create_session(
     skill_ids: list[str] | None = None,
     conversation_id: str | None = None,
 ) -> SessionDocument:
+    # 第一条用户消息立即写入 events_snapshot，与后续轮次保持一致的存储格式
     doc = SessionDocument(
         _id=session_id,
         user_id=user_id,
         conversation_id=conversation_id,
         request=request,
         skill_ids=skill_ids or [],
+        events_snapshot=[{"event_type": "user_message", "content": request}],
     )
     db = get_db()
     await db.sessions.insert_one(doc.model_dump(by_alias=True))

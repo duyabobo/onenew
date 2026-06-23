@@ -53,6 +53,12 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
     logger.info("新消息: session_id=%s turn_id=%s request='%s'",
                 session_id, body.turn_id, body.request[:80].replace("\n", " "))
 
+    # 用户消息持久化到 events_snapshot，与第一条消息保持一致
+    # 必须在 publish 之前写入，确保 AI 响应事件追加时用户消息已在前
+    await mongo_client.append_event_snapshot(
+        session_id, {"event_type": "user_message", "content": body.request}
+    )
+
     await redis_client.publish_message(
         session_id, session.user_id, body.request, body.turn_id, body.skill_ids,
     )
