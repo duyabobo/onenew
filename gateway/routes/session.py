@@ -50,8 +50,6 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
     session = await mongo_client.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session 不存在")
-    if session.status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session 已关闭，请开启新的 session")
 
     logger.info("新消息: session_id=%s turn_id=%s status=%s request='%s'",
                 session_id, body.turn_id, session.status, body.request[:80].replace("\n", " "))
@@ -62,9 +60,9 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
         session_id, {"event_type": "user_message", "content": body.request}
     )
 
-    if session.status == SessionStatus.IDLE:
-        # 沙盒因闲置超时被回收，通过 publish_task 触发 worker 重建沙盒后执行本条消息
-        logger.info("session IDLE，触发沙盒自动重建: session_id=%s", session_id)
+    if session.status in (SessionStatus.IDLE, SessionStatus.COMPLETED, SessionStatus.FAILED):
+        # 沙盒已回收或 session 已关闭：通过 publish_task 重新拉起沙盒，视觉历史由 events_snapshot 保留
+        logger.info("session 沙盒不存在（status=%s），重新拉起沙盒: session_id=%s", session.status, session_id)
         await redis_client.publish_task(
             session_id, session.user_id, body.request, body.turn_id, body.skill_ids,
         )
