@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Pi Agent Platform 一键部署脚本
 # 用法：
-#   bash deploy.sh              # 单节点开发部署
+#   bash deploy.sh              # 单节点开发部署（构建镜像 + 启动）
+#   bash deploy.sh --no-build   # 跳过镜像构建，直接用已有镜像启动
 #   bash deploy.sh --prod       # 生产集群部署（需配置 NFS 相关环境变量）
 #   bash deploy.sh --scale 3    # 生产部署，pi-runtime 启动 3 个实例
 #   bash deploy.sh --down       # 停止并移除所有容器（保留数据卷）
@@ -25,13 +26,15 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 MODE="dev"
 PI_RUNTIME_REPLICAS=1
 COMPOSE_FILES="-f docker-compose.yml"
+NO_BUILD=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --prod)   MODE="prod"; COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"; shift ;;
-    --scale)  PI_RUNTIME_REPLICAS="${2:?--scale 需要指定实例数}"; shift 2 ;;
-    --down)   MODE="down"; shift ;;
-    --clean)  MODE="clean"; shift ;;
+    --prod)     MODE="prod"; COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"; shift ;;
+    --scale)    PI_RUNTIME_REPLICAS="${2:?--scale 需要指定实例数}"; shift 2 ;;
+    --no-build) NO_BUILD=true; shift ;;
+    --down)     MODE="down"; shift ;;
+    --clean)    MODE="clean"; shift ;;
     *) error "未知参数: $1" ;;
   esac
 done
@@ -178,7 +181,11 @@ main() {
 
   check_prerequisites
   setup_env
-  do_build
+  if [[ "$NO_BUILD" == "true" ]]; then
+    info "跳过镜像构建（--no-build），使用已有镜像"
+  else
+    do_build
+  fi
   do_start
   wait_healthy
   print_summary
