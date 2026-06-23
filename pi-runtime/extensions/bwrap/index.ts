@@ -125,13 +125,47 @@ function createBwrapBashOperations(): BashOperations {
 
 // ── 路径白名单校验 ────────────────────────────────────────────────────────────
 
-function guardPath(rawPath: string): { safe: true } | { safe: false; reason: string } {
-  const resolved = resolve(sandboxWorkspace, rawPath);
+/**
+ * 校验路径是否在 workspace / home 范围内。
+ * 使用 fs.realpath() 解析符号链接后再做白名单判断，防止：
+ *   1. ../路径遍历（path.resolve 字符串层面已处理）
+ *   2. 符号链接逃逸（workspace/link → /data/sandboxes/other-user）
+ *
+ * 对于尚不存在的路径（如写入新文件），逐级向上找到最近存在的父目录，
+ * 对父目录做 realpath，再拼回文件名，避免误拒合法的新建文件操作。
+ */
+async function guardPath(rawPath: string): Promise<{ safe: true } | { safe: false; reason: string }> {
+  const { realpath, access: fsAccess } = await import("fs/promises");
+  const { resolve: pathResolve, dirname, basename, join: pathJoin } = await import("path");
+
+  const tentative = pathResolve(sandboxWorkspace, rawPath);
   const allowed = [sandboxWorkspace, sandboxHome].filter(Boolean);
-  const inBounds = allowed.some((base) => resolved.startsWith(base + "/") || resolved === base);
-  if (!inBounds) {
-    return { safe: false, reason: `路径越界: ${rawPath} → ${resolved}（只允许访问 workspace 和 home）` };
+
+  // 第一道：字符串检查（快速排除明显越界，如绝对路径、../遍历）
+  const tentativeOk = allowed.some((base) => tentative.startsWith(base + "/") || tentative === base);
+  if (!tentativeOk) {
+    return { safe: false, reason: `路径越界: ${rawPath} → ${tentative}（只允许访问 workspace 和 home）` };
   }
+
+  // 第二道：realpath 检查（解析符号链接后再做白名单判断，防止 symlink 逃逸）
+  let canonical: string;
+  try {
+    canonical = await realpath(tentative);
+  } catch {
+    // 路径不存在（如写入新文件）：对父目录做 realpath，再拼回文件名
+    try {
+      const parentReal = await realpath(dirname(tentative));
+      canonical = pathJoin(parentReal, basename(tentative));
+    } catch {
+      canonical = tentative; // 父目录也不存在，维持原路径（访问时会自然报错）
+    }
+  }
+
+  const canonicalOk = allowed.some((base) => canonical.startsWith(base + "/") || canonical === base);
+  if (!canonicalOk) {
+    return { safe: false, reason: `路径越界（符号链接解析后）: ${rawPath} → ${canonical}（只允许访问 workspace 和 home）` };
+  }
+
   return { safe: true };
 }
 
@@ -170,7 +204,7 @@ export default function (pi: ExtensionAPI) {
       execute: async (id, params, signal, onUpdate, ctx) => {
         const rawPath = ((params as Record<string, unknown>)["path"] ?? "") as string;
         if (rawPath) {
-          const check = guardPath(rawPath);
+          const check = await guardPath(rawPath);
           if (!check.safe) {
             console.error(`[bwrap] 拦截越界 tool=${toolName} path=${rawPath}`);
             return makeErrorResult(check.reason);
@@ -181,7 +215,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // find/grep/ls：未指定 path 时默认在 cwd（workspace）内搜索，安全；指定 path 时做白名单校验
+  // find/grep/ls
   for (const [toolName, createTool] of [
     ["find", createFindTool],
     ["grep", createGrepTool],
@@ -193,7 +227,7 @@ export default function (pi: ExtensionAPI) {
       execute: async (id, params, signal, onUpdate, ctx) => {
         const rawPath = ((params as Record<string, unknown>)["path"] ?? "") as string;
         if (rawPath) {
-          const check = guardPath(rawPath);
+          const check = await guardPath(rawPath);
           if (!check.safe) {
             console.error(`[bwrap] 拦截越界 tool=${toolName} path=${rawPath}`);
             return makeErrorResult(check.reason);
