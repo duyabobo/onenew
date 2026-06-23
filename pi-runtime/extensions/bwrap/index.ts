@@ -151,9 +151,12 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  // bash：完全替换为 bwrap 沙盒执行
+  // bash：完全替换为 bwrap 沙盒执行（LLM 调用路径）
   const bwrapBash = createBashTool(sandboxWorkspace, { operations: createBwrapBashOperations() });
   pi.registerTool({ ...bwrapBash, label: "bash (bwrap sandbox)" });
+
+  // user_bash：用户在 TUI 里直接输入 shell 命令的路径（--mode rpc 下通常不触发，防御性兜底）
+  pi.on("user_bash", () => ({ operations: createBwrapBashOperations() }));
 
   // read/write/edit：路径白名单校验，通过后 fallthrough 到 pi 默认实现
   for (const [toolName, createTool] of [
