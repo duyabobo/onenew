@@ -129,9 +129,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      OPENAI_BASE_URL: "http://llm-proxy:9001/v1"
       OPENAI_API_KEY: "pi-agent-internal"
       SANDBOX_ROOT: "/data/sandboxes"
+      LLM_PROXY_HOST: "llm-proxy"
+      LLM_PROXY_PORT: "9001"
+      MCP_PROXY_HOST: "mcp-proxy"
+      MCP_PROXY_PORT: "8080"
     # bwrap 需要 user namespace，privileged 模式提供必要的内核能力
     privileged: true
     volumes:
@@ -148,6 +151,27 @@ services:
         condition: service_healthy
       llm-proxy:
         condition: service_healthy
+      mcp-proxy:
+        condition: service_healthy
+
+  mcp-proxy:
+    build:
+      context: ./mcp-proxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_PROXY_PORT: "8080"
+    networks:
+      - pi_net
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   mongo_data:

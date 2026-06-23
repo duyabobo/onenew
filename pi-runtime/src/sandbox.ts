@@ -26,6 +26,7 @@ import { spawn } from "child_process";
 import { mkdir, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { config } from "./config";
+import { SOCKS_DIR } from "./socket-bridge";
 
 export interface SandboxPaths {
   workspace: string;
@@ -79,12 +80,31 @@ export async function destroySandbox(userId: string, sessionId: string): Promise
   console.log(`[sandbox] session=${sessionId}: 沙盒已销毁`);
 }
 
-function buildBwrapArgs(paths: SandboxPaths): string[] {
+/**
+ * 构建外层 bwrap 参数：将 pi 进程本身运行在沙盒内。
+ *
+ * 安全策略：
+ *   - --ro-bind / /        根文件系统只读（提供系统工具和 pi 可执行文件）
+ *   - --tmpfs sandboxRoot  对沙盒内隐藏其他 session/user 目录
+ *   - --bind workspace/home/tmp  session 专属目录可读写
+ *   - --bind piConfigDir   pi config 目录可读写（bwrap 扩展需写入 bwrap.ready）
+ *   - --ro-bind socketsDir  Unix socket 白名单，只读挂载（pi 可连接不可篡改）
+ *   - --unshare-net        完全断网，唯一网络出口是挂载的 Unix socket
+ *   - --unshare-pid        独立 PID 空间
+ *   - --die-with-parent    pi-runtime 退出时沙盒子进程自动终止
+ */
+export function buildOuterSandboxArgs(
+  paths: SandboxPaths,
+  piConfigDir: string
+): string[] {
   return [
     "--ro-bind", "/", "/",
+    "--tmpfs", config.sandbox.root,
     "--bind", paths.workspace, paths.workspace,
     "--bind", paths.home, paths.home,
     "--bind", paths.sessionTmp, paths.sessionTmp,
+    "--bind", piConfigDir, piConfigDir,
+    "--ro-bind", SOCKS_DIR, SOCKS_DIR,
     "--proc", "/proc",
     "--dev", "/dev",
     "--unshare-net",
@@ -95,11 +115,24 @@ function buildBwrapArgs(paths: SandboxPaths): string[] {
   ];
 }
 
+// execInSandbox 仅用于 pi-session 外部的一次性辅助命令（如清理验证等），
+// 保留接口以兼容现有调用方，内部使用简单 bash 不加网络隔离。
 export function execInSandbox(
   cmd: string,
   paths: SandboxPaths
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const args = [...buildBwrapArgs(paths), "bash", "-c", cmd];
+  const args = [
+    "--ro-bind", "/", "/",
+    "--bind", paths.workspace, paths.workspace,
+    "--bind", paths.home, paths.home,
+    "--bind", paths.sessionTmp, paths.sessionTmp,
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--unshare-pid",
+    "--die-with-parent",
+    "--chdir", paths.workspace,
+    "--", "bash", "-c", cmd,
+  ];
 
   return new Promise((resolve) => {
     const proc = spawn("bwrap", args, { stdio: ["ignore", "pipe", "pipe"] });

@@ -55,6 +55,14 @@ const sandboxHome = process.env.PI_SANDBOX_HOME ?? "";
 const sandboxTmp = process.env.PI_SANDBOX_TMP ?? "";
 const piCodingAgentDir = process.env.PI_CODING_AGENT_DIR ?? "";
 
+/**
+ * 是否已运行在外层 bwrap 沙盒内。
+ * 当 PI_OUTER_SANDBOX=1 时，pi 进程本身已被 bwrap 隔离（--unshare-net + 文件系统限制），
+ * bash 命令继承沙盒上下文，不再需要额外的内层 bwrap 封装。
+ * 路径白名单（guardPath）对 read/write/edit 工具仍然生效。
+ */
+const isInsideOuterSandbox = process.env.PI_OUTER_SANDBOX === "1";
+
 // ── bwrap 参数构造 ────────────────────────────────────────────────────────────
 
 function buildBwrapArgs(cmd: string): string[] {
@@ -76,10 +84,67 @@ function buildBwrapArgs(cmd: string): string[] {
 }
 
 /**
- * 实现 BashOperations 接口，将命令路由到 bwrap 沙盒执行。
- * onData 流式传递输出，与 pi 的默认实现保持一致。
+ * 实现 BashOperations 接口。
+ *
+ * 若已在外层 bwrap 沙盒内（PI_OUTER_SANDBOX=1）：
+ *   bash 命令直接在当前沙盒内执行，继承外层的网络隔离和文件系统限制。
+ *
+ * 若未在外层沙盒内（旧模式，兜底）：
+ *   bash 命令通过内层 bwrap 执行，提供独立的网络和 PID 隔离。
  */
 function createBwrapBashOperations(): BashOperations {
+  if (isInsideOuterSandbox) {
+    // 外层沙盒模式：直接运行 bash，继承沙盒上下文
+    return {
+      async exec(command, cwd, { onData, signal, timeout }) {
+        return new Promise((resolve, reject) => {
+          const child = spawn("bash", ["-c", command], {
+            cwd: cwd ?? sandboxWorkspace,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+
+          let timedOut = false;
+          let timeoutHandle: NodeJS.Timeout | undefined;
+
+          if (timeout !== undefined && timeout > 0) {
+            timeoutHandle = setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGKILL");
+            }, timeout * 1000);
+          }
+
+          child.stdout?.on("data", onData);
+          child.stderr?.on("data", onData);
+
+          const onAbort = () => child.kill("SIGKILL");
+          signal?.addEventListener("abort", onAbort, { once: true });
+
+          child.on("error", (err) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            reject(err);
+          });
+
+          child.on("close", (code) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            signal?.removeEventListener("abort", onAbort);
+            if (signal?.aborted) {
+              reject(new Error("aborted"));
+            } else if (timedOut) {
+              reject(new Error(`timeout:${timeout}`));
+            } else {
+              resolve({ exitCode: code ?? 1 });
+            }
+          });
+        });
+      },
+    };
+  }
+
+  // 旧模式：通过内层 bwrap 执行（pi 未在外层沙盒内时的兜底）
+  return createBwrapInnerOperations();
+}
+
+function createBwrapInnerOperations(): BashOperations {
   return {
     async exec(command, _cwd, { onData, signal, timeout }) {
       return new Promise((resolve, reject) => {

@@ -18,6 +18,7 @@ import { connect as connectMongo, disconnect as disconnectMongo, updateSessionSt
 import { connectRedis, disconnectRedis, getRedis, SessionOutputStream } from "./output-stream";
 import { createSandbox, destroySandbox } from "./sandbox";
 import { startPiSession, PiSessionHandle } from "./pi-session";
+import { startSocketBridge } from "./socket-bridge";
 
 // ── 消息类型定义 ──────────────────────────────────────────────────────────────
 
@@ -283,6 +284,16 @@ async function main(): Promise<void> {
 
   await connectMongo();
   await connectRedis();
+
+  // 启动 Unix socket 桥：为沙盒提供 llm-proxy 和 mcp-proxy 两个网络白名单出口
+  startSocketBridge(
+    process.env.LLM_PROXY_HOST ?? "llm-proxy",
+    Number(process.env.LLM_PROXY_PORT ?? 9001),
+    process.env.MCP_PROXY_HOST ?? "mcp-proxy",
+    Number(process.env.MCP_PROXY_PORT ?? 8080)
+  );
+  console.log(`[worker] socket bridge 已启动（llm.sock → llm-proxy, mcp.sock → mcp-proxy）`);
+
   const subscriber = await startSubscriber();
 
   await registerInstanceAlive();

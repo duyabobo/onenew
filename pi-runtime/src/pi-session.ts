@@ -2,9 +2,8 @@ import { spawn, ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import { mkdir, writeFile, rm, access as fsAccess } from "fs/promises";
 import { join } from "path";
-import { SandboxPaths } from "./sandbox";
+import { SandboxPaths, buildOuterSandboxArgs } from "./sandbox";
 import { SessionOutputStream } from "./output-stream";
-import { getMcpConfig, McpServerConfig } from "./mongo-client";
 
 // ── Pi RPC 协议类型 ───────────────────────────────────────────────────────────
 
@@ -79,28 +78,19 @@ interface ActiveTurn {
   bwrapChecked: boolean;  // 首轮校验 bwrap.ready，后续轮次跳过
 }
 
-// ── MCP 配置过滤 ──────────────────────────────────────────────────────────────
-
-function filterUrlOnlyMcpServers(
-  servers: Record<string, McpServerConfig>
-): Record<string, McpServerConfig> {
-  const safe: Record<string, McpServerConfig> = {};
-  for (const [name, cfg] of Object.entries(servers)) {
-    const raw = cfg as unknown as Record<string, unknown>;
-    if (cfg.url && !raw["command"]) {
-      safe[name] = cfg;
-    } else {
-      console.warn(`[pi-session] MCP Server "${name}" 已跳过：缺少 url 或含有 command 字段`);
-    }
-  }
-  return safe;
-}
+// ── MCP 配置过滤（已移至 mcp-proxy 服务，此处删除）────────────────────────────
 
 // ── pi config 目录管理 ────────────────────────────────────────────────────────
 
 /**
- * 为 session 创建独立的 pi config 目录，写入 MCP 配置、models.json，软链接扩展和 skills。
- * PI_CODING_AGENT_DIR 指向此目录，确保多 session 间配置完全隔离。
+ * 为 session 创建独立的 pi config 目录，写入 mcp.json（指向沙盒内 mcp-proxy 桥）、
+ * models.json（指向沙盒内 llm-proxy 桥），软链接扩展和 skills。
+ *
+ * 网络策略变更说明：
+ *   - mcp.json 只配置一个条目，URL 指向沙盒内 loopback:8080（→ Unix socket → mcp-proxy）
+ *   - models.json baseUrl 指向沙盒内 loopback:9001（→ Unix socket → llm-proxy）
+ *   - 真实的 MCP Server 列表由 mcp-proxy 服务从 MongoDB 读取并管理
+ *   - pi-session 不再直接读取 MCP 配置，职责更单一
  */
 async function setupPiConfigDir(
   sessionId: string,
@@ -110,22 +100,28 @@ async function setupPiConfigDir(
   const piConfigDir = `/tmp/pi-config/${sessionId}`;
   await mkdir(piConfigDir, { recursive: true });
 
-  // MCP 配置（从 MongoDB 读取，只保留 url 类型，command 类型双重过滤）
-  const mcpConfig = await getMcpConfig();
-  const safeServers = filterUrlOnlyMcpServers(mcpConfig.servers);
-  await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify({ mcpServers: safeServers }, null, 2));
+  // MCP 配置：仅指向沙盒内的 mcp-proxy 桥（127.0.0.1:8080）
+  // 真实 MCP Server 路由完全由 mcp-proxy 服务负责
+  const mcpJson = {
+    mcpServers: {
+      "mcp-proxy": {
+        url: "http://127.0.0.1:8080/mcp",
+      },
+    },
+  };
+  await writeFile(join(piConfigDir, "mcp.json"), JSON.stringify(mcpJson, null, 2));
 
-  // LLM provider 配置（指向 llm-proxy，model id 是占位符）
+  // LLM provider 配置：指向沙盒内的 llm-proxy 桥（127.0.0.1:9001）
   const piModelsJson = {
     providers: {
       "llm-proxy": {
-        baseUrl: process.env.OPENAI_BASE_URL ?? "http://llm-proxy:9001/v1",
+        baseUrl: "http://127.0.0.1:9001/v1",
         api: "openai-completions",
         apiKey: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
         models: [{
           id: "default",
-          name: "LLM Proxy (via llm-proxy)",
+          name: "LLM Proxy (sandboxed via Unix socket)",
           reasoning: false,
           input: ["text"],
           contextWindow: 128000,
@@ -210,27 +206,39 @@ export async function startPiSession(
   const piConfigDir = await setupPiConfigDir(sessionId, sandboxPaths.globalSkills, sandboxPaths.userSkills);
 
   // pi 子进程只注入必要环境变量，不暴露 MongoDB/Redis 凭据
+  // OPENAI_BASE_URL/KEY 不再传入：pi 在沙盒内通过 127.0.0.1:9001 调用 llm-proxy 桥
   const piEnv: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-    HOME: process.env.HOME ?? "/root",
+    HOME: sandboxPaths.home,
     TERM: process.env.TERM ?? "xterm",
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL ?? "http://llm-proxy:9001/v1",
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "pi-agent-internal",
     PI_SANDBOX_ROOT: process.env.SANDBOX_ROOT ?? "/data/sandboxes",
     PI_SANDBOX_WORKSPACE: sandboxPaths.workspace,
     PI_SANDBOX_HOME: sandboxPaths.home,
     PI_SANDBOX_TMP: sandboxPaths.sessionTmp,
     PI_CODING_AGENT_DIR: piConfigDir,
+    // 告知 bwrap 扩展当前已在外层沙盒内，跳过内层 bwrap（避免多余的嵌套）
+    PI_OUTER_SANDBOX: "1",
   };
 
   const skillArgs = buildSkillArgs(skillIds, sandboxPaths.globalSkills, sandboxPaths.userSkills);
   const piArgs = ["--mode", "rpc", "--no-session", "--provider", "llm-proxy", "--model", "default", ...skillArgs];
 
-  const piProcess: ChildProcess = spawn("pi", piArgs, {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: piEnv,
-    cwd: sandboxPaths.workspace,
-  });
+  // 外层 bwrap 参数：将 pi 进程整体置于网络隔离沙盒内
+  const outerBwrapArgs = buildOuterSandboxArgs(sandboxPaths, piConfigDir);
+
+  // 完整命令：bwrap <沙盒参数> <启动脚本> pi <pi参数>
+  // sandbox-init.sh 负责：启用 loopback、启动 TCP↔Unix socket 桥、exec pi
+  const sandboxInitScript = "/app/extensions/sandbox-init/sandbox-init.sh";
+
+  const piProcess: ChildProcess = spawn(
+    "bwrap",
+    [...outerBwrapArgs, sandboxInitScript, "pi", ...piArgs],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: piEnv,
+      cwd: sandboxPaths.workspace,
+    }
+  );
 
   console.log(`[pi-session] session=${sessionId}: pi 进程已启动 pid=${piProcess.pid}`);
 

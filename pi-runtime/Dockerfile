@@ -1,12 +1,17 @@
 FROM node:24-bookworm-slim
 
-# 安装系统工具：bwrap（沙盒核心）、python3（沙盒内 Python 环境）、ripgrep（pi 依赖）
+# 安装系统工具：
+#   bwrap       沙盒核心
+#   iproute2    提供 ip 命令（沙盒启动脚本用 ip link set lo up 启用 loopback）
+#   python3     沙盒内 Python 环境
+#   ripgrep     pi 依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     bubblewrap \
     ca-certificates \
     curl \
     git \
+    iproute2 \
     python3 \
     python3-pip \
     python3-venv \
@@ -47,14 +52,16 @@ COPY tsconfig.json .
 COPY src ./src
 RUN npm run build
 
-# 复制扩展目录（bwrap extension、mcp-servers、mcp.json）
+# 复制扩展目录（bwrap extension、mcp-servers、sandbox-init、mcp.json）
 COPY extensions ./extensions
 COPY config/mcp.json ./config/mcp.json
 
 # 将 MCP 配置和 bwrap 扩展注册到 pi 默认路径
+# sandbox-init 不注册到 pi extensions，直接通过绝对路径 /app/extensions/sandbox-init/ 调用
 RUN mkdir -p /root/.pi/agent/extensions && \
     cp config/mcp.json /root/.pi/agent/mcp.json && \
-    cp -r extensions/bwrap /root/.pi/agent/extensions/bwrap
+    cp -r extensions/bwrap /root/.pi/agent/extensions/bwrap && \
+    chmod +x extensions/sandbox-init/sandbox-init.sh
 
 # 清理 devDependencies（编译完成后不再需要）
 RUN npm prune --omit=dev
