@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from logger import setup_logging
+from middleware import AccessLogMiddleware
 from routes import session, skills, stream
 from services import mongo_client, redis_client
 
@@ -19,6 +20,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AccessLogMiddleware)
 
 app.include_router(session.router)
 app.include_router(stream.router)

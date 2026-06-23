@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from logger import setup_logging
+from middleware import AccessLogMiddleware
 from routes.config import router as config_router
 from routes.skills import router as skills_router
 from services import mongo_client
@@ -19,6 +20,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AccessLogMiddleware)
 
 app.include_router(config_router)
 app.include_router(skills_router)
