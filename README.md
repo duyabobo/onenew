@@ -81,7 +81,7 @@ flowchart LR
 | **llm-proxy** | 9001 | Python FastAPI | LLM 代理（OpenAI 兼容）、Provider 配置热更新 |
 | **pi-runtime** | — | Node.js + Pi Agent | Agent 任务执行、bwrap 沙盒隔离、MCP 工具调用 |
 | **redis** | 6379 | Redis 7 | 会话任务 Pub/Sub + 增量输出 Stream |
-| **mongo** | 27017 | MongoDB 7 | 会话状态、LLM / MCP 配置、Skill 元数据 |
+| **mongo** | 27017 | MongoDB 7 | 会话数据、LLM / MCP 配置、Skill 元数据 |
 
 ---
 
