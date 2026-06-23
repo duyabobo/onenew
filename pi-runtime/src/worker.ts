@@ -76,7 +76,7 @@ async function processSession(payload: TaskPayload): Promise<void> {
     await updateSessionStatus(session_id, "RUNNING");
     console.log(`[worker] session ${session_id}: 状态已更新为 RUNNING`);
 
-    // userId 用于确定持久化 workspace 路径，同一 user 跨 session 复用
+    // userId 用于确定 session 沙盒路径（session 级隔离，不跨 session 复用）
     const sandboxPaths = await createSandbox(user_id, session_id);
     console.log(`[worker] session ${session_id}: 沙盒就绪，workspace=${sandboxPaths.workspace}`);
 
@@ -96,7 +96,8 @@ async function processSession(payload: TaskPayload): Promise<void> {
     await outputStream.pushDone().catch(() => {});
     await updateSessionStatus(session_id, "FAILED", { error: message });
   } finally {
-    // 只清理 session 临时目录，user workspace 持久保留
+    // session 结束后清理整个沙盒目录（workspace/home/tmp 全部删除）
+    // user 级别的 skills 目录在 sandbox root 的 users/{userId}/skills/ 下，不在此处，不受影响
     await destroySandbox(user_id, session_id).catch((err) =>
       console.error(`[worker] 销毁临时目录失败: session=${session_id}`, err)
     );
