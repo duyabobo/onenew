@@ -36,12 +36,17 @@ pi 通过 mcp-proxy 间接调用外部工具，沙盒内没有任何 MCP Server 
 
 ```
 mcp-proxy/
-└── src/
-    ├── config.ts           环境变量配置（端口、MongoDB、刷新间隔）
-    ├── mongo-client.ts     只读 MongoDB：读取启用的 MCP Server 列表
-    ├── mcp-aggregator.ts   聚合器：连接后端、汇总工具、路由调用
-    └── index.ts            HTTP 服务器入口，实现 MCP JSON-RPC 协议
+├── main.py                   FastAPI 入口，实现 MCP JSON-RPC 协议
+├── config.py                 环境变量配置（pydantic-settings）
+├── logger.py                 日志初始化（与 gateway 风格一致）
+├── requirements.txt
+├── Dockerfile
+└── services/
+    ├── mongo_client.py       只读 MongoDB：读取启用的 MCP Server 列表
+    └── mcp_aggregator.py     聚合器：连接后端、汇总工具、路由调用
 ```
+
+**技术栈**：FastAPI + motor（异步 MongoDB）+ `mcp` Python SDK（官方 MCP 客户端）
 
 ---
 
