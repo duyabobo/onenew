@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 class SessionStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    # 沙盒因闲置超时被回收，session 仍可重启（区别于用户主动关闭的 COMPLETED）
+    IDLE = "IDLE"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 

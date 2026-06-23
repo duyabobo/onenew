@@ -4,6 +4,8 @@ import { config } from "./config";
 const SESSION_STATUS = {
   PENDING: "PENDING",
   RUNNING: "RUNNING",
+  // 沙盒因闲置超时被回收，session 仍可重启（区别于用户主动关闭的 COMPLETED）
+  IDLE: "IDLE",
   COMPLETED: "COMPLETED",
   FAILED: "FAILED",
 } as const;

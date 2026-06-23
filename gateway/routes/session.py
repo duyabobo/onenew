@@ -43,6 +43,9 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
     """
     向已有 session 发送新消息（新轮次）。
     前端提供 turn_id，发送后订阅 /sessions/{session_id}/turns/{turn_id}/stream 获取响应。
+
+    IDLE 状态（沙盒因闲置超时被回收）时自动重建沙盒并继续会话；
+    COMPLETED/FAILED（用户主动关闭或异常终止）才真正拒绝。
     """
     session = await mongo_client.get_session(session_id)
     if session is None:
@@ -50,8 +53,8 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
     if session.status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session 已关闭，请开启新的 session")
 
-    logger.info("新消息: session_id=%s turn_id=%s request='%s'",
-                session_id, body.turn_id, body.request[:80].replace("\n", " "))
+    logger.info("新消息: session_id=%s turn_id=%s status=%s request='%s'",
+                session_id, body.turn_id, session.status, body.request[:80].replace("\n", " "))
 
     # 用户消息持久化到 events_snapshot，与第一条消息保持一致
     # 必须在 publish 之前写入，确保 AI 响应事件追加时用户消息已在前
@@ -59,9 +62,16 @@ async def send_message(session_id: str, body: SendMessageRequest) -> SendMessage
         session_id, {"event_type": "user_message", "content": body.request}
     )
 
-    await redis_client.publish_message(
-        session_id, session.user_id, body.request, body.turn_id, body.skill_ids,
-    )
+    if session.status == SessionStatus.IDLE:
+        # 沙盒因闲置超时被回收，通过 publish_task 触发 worker 重建沙盒后执行本条消息
+        logger.info("session IDLE，触发沙盒自动重建: session_id=%s", session_id)
+        await redis_client.publish_task(
+            session_id, session.user_id, body.request, body.turn_id, body.skill_ids,
+        )
+    else:
+        await redis_client.publish_message(
+            session_id, session.user_id, body.request, body.turn_id, body.skill_ids,
+        )
 
     return SendMessageResponse(turn_id=body.turn_id, session_id=session_id)
 

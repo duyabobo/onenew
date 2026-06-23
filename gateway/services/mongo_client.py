@@ -177,6 +177,7 @@ async def update_session_status(
     if status == SessionStatus.RUNNING:
         update["started_at"] = datetime.utcnow()
     elif status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
+        # IDLE 不写 completed_at，保留其可重启语义
         update["completed_at"] = datetime.utcnow()
     if extra_fields:
         update.update(extra_fields)

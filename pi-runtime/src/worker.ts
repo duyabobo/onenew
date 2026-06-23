@@ -104,8 +104,11 @@ async function closeSession(sessionId: string, reason: string): Promise<void> {
   await destroySandbox(running.userId, sessionId).catch((err) =>
     console.error(`[worker] 销毁沙盒失败: session=${sessionId}`, err)
   );
-  await updateSessionStatus(sessionId, "COMPLETED").catch(() => {});
-  console.log(`[worker] session=${sessionId}: 已完全关闭`);
+
+  // 超时关闭标记为 IDLE（沙盒已回收，session 可重启）；其他原因（用户主动关闭/进程退出）标记为 COMPLETED
+  const finalStatus = reason === "timeout" ? "IDLE" : "COMPLETED";
+  await updateSessionStatus(sessionId, finalStatus).catch(() => {});
+  console.log(`[worker] session=${sessionId}: 已完全关闭，最终状态=${finalStatus}`);
 }
 
 /**
