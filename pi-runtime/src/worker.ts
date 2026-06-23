@@ -107,6 +107,63 @@ async function closeSession(sessionId: string, reason: string): Promise<void> {
   console.log(`[worker] session=${sessionId}: 已完全关闭`);
 }
 
+/**
+ * 启动 pi 进程、创建沙盒、订阅 Redis 频道并注册到 runningSessions。
+ * openSession（首次创建）和 handleNewMessage（自动重建）共用此函数。
+ */
+async function startAndRegisterSession(
+  sessionId: string,
+  userId: string,
+  skillIds: string[]
+): Promise<RunningSession> {
+  await bindUserToInstance(userId);
+  await updateSessionStatus(sessionId, "RUNNING");
+
+  const sandboxPaths = await createSandbox(userId, sessionId);
+  console.log(`[worker] session=${sessionId}: 沙盒就绪 workspace=${sandboxPaths.workspace}`);
+
+  const piHandle = await startPiSession(sessionId, sandboxPaths, skillIds);
+  console.log(`[worker] session=${sessionId}: pi 进程已启动`);
+
+  const messageSubscriber = new Redis(config.redis.url);
+  const closeSubscriber = new Redis(config.redis.url);
+  const messageChannel = `sessions:${sessionId}:message`;
+  const closeChannel = `sessions:${sessionId}:close`;
+
+  const running: RunningSession = {
+    sessionId,
+    userId,
+    piHandle,
+    messageSubscriber,
+    closeSubscriber,
+    inactivityTimer: setTimeout(() => {}, 0), // 占位，立即被 resetInactivityTimer 覆盖
+    startedAt: Date.now(),
+  };
+  runningSessions.set(sessionId, running);
+  resetInactivityTimer(running);
+
+  messageSubscriber.on("message", (_channel, msg) => {
+    let msgPayload: NewMessagePayload;
+    try { msgPayload = JSON.parse(msg) as NewMessagePayload; }
+    catch { console.error(`[worker] 无法解析消息: ${msg}`); return; }
+    handleNewMessage(msgPayload).catch((err) =>
+      console.error(`[worker] 处理消息失败: session=${sessionId} turn=${msgPayload.turn_id}`, err)
+    );
+  });
+
+  closeSubscriber.on("message", () => {
+    closeSession(sessionId, "user_close").catch((err) =>
+      console.error(`[worker] 处理关闭失败: session=${sessionId}`, err)
+    );
+  });
+
+  await messageSubscriber.subscribe(messageChannel);
+  await closeSubscriber.subscribe(closeChannel);
+  console.log(`[worker] session=${sessionId}: 已订阅消息频道 [${messageChannel}] 和关闭频道 [${closeChannel}]`);
+
+  return running;
+}
+
 // ── 处理新 session（第一条消息，创建 pi 进程）───────────────────────────────
 
 async function openSession(payload: NewSessionPayload): Promise<void> {
@@ -118,66 +175,23 @@ async function openSession(payload: NewSessionPayload): Promise<void> {
   }
 
   console.log(`[worker] 创建 session: session=${session_id} user=${user_id} turn=${turn_id}`);
-
-  await bindUserToInstance(user_id);
-  await updateSessionStatus(session_id, "RUNNING");
-
-  const sandboxPaths = await createSandbox(user_id, session_id);
-  console.log(`[worker] session=${session_id}: 沙盒就绪 workspace=${sandboxPaths.workspace}`);
-
-  const piHandle = await startPiSession(session_id, sandboxPaths, skill_ids);
-  console.log(`[worker] session=${session_id}: pi 进程已启动`);
-
-  // 订阅本 session 的消息频道和关闭频道
-  const messageSubscriber = new Redis(config.redis.url);
-  const closeSubscriber = new Redis(config.redis.url);
-  const messageChannel = `sessions:${session_id}:message`;
-  const closeChannel = `sessions:${session_id}:close`;
-
-  const running: RunningSession = {
-    sessionId: session_id,
-    userId: user_id,
-    piHandle,
-    messageSubscriber,
-    closeSubscriber,
-    inactivityTimer: setTimeout(() => {}, 0), // 占位，立即被 resetInactivityTimer 覆盖
-    startedAt: Date.now(),
-  };
-  runningSessions.set(session_id, running);
-  resetInactivityTimer(running);
-
-  messageSubscriber.on("message", (_channel, msg) => {
-    let msgPayload: NewMessagePayload;
-    try { msgPayload = JSON.parse(msg) as NewMessagePayload; }
-    catch { console.error(`[worker] 无法解析消息: ${msg}`); return; }
-    handleNewMessage(msgPayload).catch((err) =>
-      console.error(`[worker] 处理消息失败: session=${session_id} turn=${msgPayload.turn_id}`, err)
-    );
-  });
-
-  closeSubscriber.on("message", () => {
-    closeSession(session_id, "user_close").catch((err) =>
-      console.error(`[worker] 处理关闭失败: session=${session_id}`, err)
-    );
-  });
-
-  await messageSubscriber.subscribe(messageChannel);
-  await closeSubscriber.subscribe(closeChannel);
-  console.log(`[worker] session=${session_id}: 已订阅消息频道 [${messageChannel}] 和关闭频道 [${closeChannel}]`);
-
-  // 发送第一条消息
+  const running = await startAndRegisterSession(session_id, user_id, skill_ids);
   await sendTurnToSession(running, turn_id, request);
 }
 
 // ── 处理新消息（追加轮次到已有 session）──────────────────────────────────────
 
 async function handleNewMessage(payload: NewMessagePayload): Promise<void> {
-  const { session_id, request, turn_id } = payload;
-  const running = runningSessions.get(session_id);
+  const { session_id, user_id, request, turn_id, skill_ids = [] } = payload;
+  let running = runningSessions.get(session_id);
+
   if (!running) {
-    console.error(`[worker] 收到消息但 session 不在运行中: session=${session_id}`);
-    return;
+    // pi 进程不在内存中（崩溃或被清理），自动重建后继续处理本条消息
+    console.warn(`[worker] session=${session_id}: pi 进程不存在，自动重建`);
+    running = await startAndRegisterSession(session_id, user_id, skill_ids);
+    console.log(`[worker] session=${session_id}: pi 进程重建完成`);
   }
+
   resetInactivityTimer(running);
   await sendTurnToSession(running, turn_id, request);
 }
