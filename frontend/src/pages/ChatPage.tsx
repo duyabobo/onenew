@@ -23,10 +23,18 @@ function buildMessagesFromSnapshot(
   request: string,
   snapshot: Array<{ event_type: string; content: string }>
 ): Message[] {
-  const msgs: Message[] = [{ role: "user", type: "text", content: request }];
+  // 新格式：snapshot 含 user_message 事件，直接从 snapshot 重建完整对话
+  // 旧格式：snapshot 无 user_message，用 request 作为第一条兜底（向后兼容）
+  const hasUserMessages = snapshot.some((e) => e.event_type === "user_message");
+  const msgs: Message[] = hasUserMessages
+    ? []
+    : [{ role: "user", type: "text", content: request }];
+
   for (const event of snapshot) {
     const last = msgs[msgs.length - 1];
-    if (event.event_type === "token") {
+    if (event.event_type === "user_message") {
+      msgs.push({ role: "user", type: "text", content: event.content });
+    } else if (event.event_type === "token") {
       if (last?.role === "assistant" && last.type === "text") {
         last.content += event.content;
       } else {
