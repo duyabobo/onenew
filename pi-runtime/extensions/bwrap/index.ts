@@ -46,7 +46,6 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
 const sandboxRoot = process.env.PI_SANDBOX_ROOT ?? "/data/sandboxes";

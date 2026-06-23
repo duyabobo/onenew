@@ -24,7 +24,7 @@ flowchart LR
         subgraph piruntime ["执行层（pi-runtime）"]
             direction TB
             McpAdapter["pi-mcp-adapter\nMCP Client"]
-            Bwrap["bwrap\nsession 级别的 cmd 执行沙盒"]
+            Bwrap["bwrap\nsession 级别的 bash 执行沙盒"]
             SkillFS["Skill 文件管理\nuser 级别的文件管理系统"]
             PiTools["pi 内部工具命令\nread / write / edit / find / grep / ls"]
             PiAgent["任务执行"]
