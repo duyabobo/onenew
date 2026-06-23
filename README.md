@@ -67,7 +67,7 @@ flowchart TB
 | **gateway** | 8000 | Python FastAPI | 会话 CRUD、SSE 流式输出、Skill 元数据列表 |
 | **admin** | 9000 | Python FastAPI | MCP Server 配置、Skill 管理（元数据 + 文件）|
 | **llm-proxy** | 9001 | Python FastAPI | LLM 代理（OpenAI 兼容）、Provider 配置热更新 |
-| **mcp-proxy** | 8080 | Node.js | MCP 聚合代理：汇总所有 MCP Server 工具，统一路由调用 |
+| **mcp-proxy** | 8080 | Python FastAPI | MCP 聚合代理：汇总所有 MCP Server 工具，统一路由调用 |
 | **pi-runtime** | — | Node.js + Pi Agent | Agent 任务执行、bwrap 沙盒隔离、Unix socket 网络白名单 |
 | **redis** | 6379 | Redis 7 | 会话任务 Pub/Sub + 增量输出 Stream |
 | **mongo** | 27017 | MongoDB 7 | 会话数据、LLM / MCP 配置、Skill 元数据 |
@@ -112,6 +112,6 @@ pi-agent-platform/
 ├── gateway/               # FastAPI 会话网关 
 ├── admin/                 # FastAPI 管理服务 - MCP/Skill 配置 
 ├── llm-proxy/             # FastAPI LLM 代理服务 
-├── mcp-proxy/             # Node.js MCP 聚合代理 
+├── mcp-proxy/             # FastAPI MCP 聚合代理 
 └── pi-runtime/            # Node.js Pi Agent 执行引擎 
 ```
