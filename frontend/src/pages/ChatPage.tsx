@@ -195,6 +195,7 @@ export default function ChatPage() {
       closeSession(sessionIdRef.current).catch(() => {});
     }
     sessionIdRef.current = s.session_id;
+    localStorage.setItem("pi_session_id", s.session_id);
     setMessages([]);
 
     const detail = await getSessionDetail(s.session_id);
