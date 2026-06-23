@@ -147,6 +147,28 @@ export default function ChatPage() {
   const closeStreamRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // 页面加载时从 localStorage 恢复上次会话
+  useEffect(() => {
+    const savedSessionId = localStorage.getItem("pi_session_id");
+    const savedUserId = localStorage.getItem("pi_user_id");
+    if (!savedSessionId || !savedUserId) return;
+
+    sessionIdRef.current = savedSessionId;
+    getSessionDetail(savedSessionId).then((detail) => {
+      if (detail) {
+        setMessages(buildMessagesFromSnapshot(detail.request, detail.events_snapshot));
+      } else {
+        // session 已失效，清除存储
+        localStorage.removeItem("pi_session_id");
+        sessionIdRef.current = null;
+      }
+    }).catch(() => {
+      localStorage.removeItem("pi_session_id");
+      sessionIdRef.current = null;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     skillsApi.list().then((list) => setSkills(list.filter((s) => !s.hidden))).catch(() => {});
   }, []);
@@ -188,6 +210,7 @@ export default function ChatPage() {
       closeSession(sessionIdRef.current).catch(() => {});
       sessionIdRef.current = null;
     }
+    localStorage.removeItem("pi_session_id");
     setMessages([]);
     setError("");
   }, []);
@@ -232,6 +255,7 @@ export default function ChatPage() {
         const resp = await createSession(userId, trimmed, turnId, skillIds);
         sessionId = resp.session_id;
         sessionIdRef.current = sessionId;
+        localStorage.setItem("pi_session_id", sessionId);
       } else {
         // 后续消息：发送到已有 session
         await sendMessage(sessionId, trimmed, turnId, skillIds);
