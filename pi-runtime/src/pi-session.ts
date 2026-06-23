@@ -78,8 +78,6 @@ interface ActiveTurn {
   bwrapChecked: boolean;  // 首轮校验 bwrap.ready，后续轮次跳过
 }
 
-// ── MCP 配置过滤（已移至 mcp-proxy 服务，此处删除）────────────────────────────
-
 // ── pi config 目录管理 ────────────────────────────────────────────────────────
 
 /**

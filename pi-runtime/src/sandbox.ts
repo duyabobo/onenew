@@ -22,7 +22,6 @@
  *   内外路径完全相同，pi 的 read/write/edit 工具（Node.js）和 bash 工具（bwrap）
  *   操作的是同一个物理目录，不存在路径映射歧义。
  */
-import { spawn } from "child_process";
 import { mkdir, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { config } from "./config";
@@ -113,35 +112,4 @@ export function buildOuterSandboxArgs(
     "--chdir", paths.workspace,
     "--",
   ];
-}
-
-// execInSandbox 仅用于 pi-session 外部的一次性辅助命令（如清理验证等），
-// 保留接口以兼容现有调用方，内部使用简单 bash 不加网络隔离。
-export function execInSandbox(
-  cmd: string,
-  paths: SandboxPaths
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const args = [
-    "--ro-bind", "/", "/",
-    "--bind", paths.workspace, paths.workspace,
-    "--bind", paths.home, paths.home,
-    "--bind", paths.sessionTmp, paths.sessionTmp,
-    "--proc", "/proc",
-    "--dev", "/dev",
-    "--unshare-pid",
-    "--die-with-parent",
-    "--chdir", paths.workspace,
-    "--", "bash", "-c", cmd,
-  ];
-
-  return new Promise((resolve) => {
-    const proc = spawn("bwrap", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    proc.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
-    proc.on("error", (err) => resolve({ stdout: "", stderr: err.message, exitCode: 1 }));
-  });
 }

@@ -67,28 +67,6 @@ export async function appendEventSnapshot(
     );
 }
 
-// ── MCP 配置读取 ─────────────────────────────────────────────────────────────
-
-/**
- * 只支持 url 类型（HTTP/SSE 远程 MCP Server）。
- * command 类型的本地进程已在 admin 层和 pi-session 过滤层被禁止。
- */
-export interface McpServerConfig {
-  url?: string;
-  enabled?: boolean;
-}
-
-export interface McpConfig {
-  servers: Record<string, McpServerConfig>;
-}
-
-export async function getMcpConfig(): Promise<McpConfig> {
-  const raw = await getDb().collection("configs").findOne({ _id: "mcp" } as unknown as Filter<Document>);
-  if (!raw) return { servers: {} };
-  const { _id: _omit, ...rest } = raw;
-  return rest as McpConfig;
-}
-
 // ── 启动恢复 ──────────────────────────────────────────────────────────────────
 
 export interface OrphanedSession {

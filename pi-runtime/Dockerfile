@@ -43,23 +43,17 @@ WORKDIR /app
 COPY package.json .
 RUN npm install
 
-# 安装自定义 MCP 服务器依赖
-COPY extensions/mcp-servers/package.json ./extensions/mcp-servers/
-RUN cd extensions/mcp-servers && npm install --omit=dev
-
 # 复制源码并编译 TypeScript
 COPY tsconfig.json .
 COPY src ./src
 RUN npm run build
 
-# 复制扩展目录（bwrap extension、mcp-servers、sandbox-init、mcp.json）
+# 复制扩展目录（bwrap extension、sandbox-init）
 COPY extensions ./extensions
-COPY config/mcp.json ./config/mcp.json
 
-# 将 MCP 配置和 bwrap 扩展注册到 pi 默认路径
-# sandbox-init 不注册到 pi extensions，直接通过绝对路径 /app/extensions/sandbox-init/ 调用
+# 将 bwrap 扩展注册到 pi 默认扩展路径（PI_CODING_AGENT_DIR 指向 session 独立目录，
+# session 目录内的 extensions 软链接回此处）
 RUN mkdir -p /root/.pi/agent/extensions && \
-    cp config/mcp.json /root/.pi/agent/mcp.json && \
     cp -r extensions/bwrap /root/.pi/agent/extensions/bwrap && \
     chmod +x extensions/sandbox-init/sandbox-init.sh
 

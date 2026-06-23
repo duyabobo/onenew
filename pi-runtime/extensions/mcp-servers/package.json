@@ -1,9 +1,0 @@
-{
-  "name": "pi-mcp-servers",
-  "version": "1.0.0",
-  "description": "Custom MCP servers for pi-runtime",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "mongodb": "^6.14.0"
-  }
-}
