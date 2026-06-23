@@ -7,70 +7,56 @@
 ## 整体架构
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "linear"}}}%%
-flowchart LR
-    subgraph mid[" "]
-        direction TB
-        subgraph row_api[" "]
-            direction LR
-            Browser["浏览器\n前端 :3000"]
-            subgraph api ["接口层"]
-                direction TB
-                Gateway["gateway\nFastAPI :8000\n会话管理 + SSE 流"]
-                Admin["admin\nFastAPI :9000\n配置管理"]
-                LLMProxy["LLM Proxy\nFastAPI :9001\nLLM 代理"]
-            end
-        end
-        subgraph piruntime ["执行层（pi-runtime）"]
+%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 80}}}%%
+flowchart TB
+    Browser["浏览器\n前端 :3000"]
+
+    subgraph mid [" "]
+        direction LR
+        subgraph api ["接口层"]
             direction TB
-            McpAdapter["pi-mcp-adapter\nMCP Client"]
-            Bwrap["bwrap\nsession 级别的 bash 执行沙盒"]
-            SkillFS["Skill 文件管理\nuser 级别的文件管理系统"]
-            PiTools["pi 内部工具命令\nread / write / edit / find / grep / ls"]
-            PiAgent["任务执行"]
+            Gateway["gateway\nFastAPI :8000\n会话管理 + SSE 流"]
+            Admin["admin\nFastAPI :9000\n配置管理"]
+        end
+        subgraph execution ["执行层"]
+            direction LR
+            subgraph proxies [" "]
+                direction TB
+                LLMProxy["llm-proxy\nFastAPI :9001\nLLM 代理"]
+                McpProxy["mcp-proxy\nFastAPI :8080\nMCP 代理"]
+            end
+            subgraph piruntime ["pi-runtime"]
+                Bwrap["bwrap 沙盒\nsession 级别 · 完全无网络\n（pi + pi-mcp-adapter）"]
+            end
         end
     end
 
     subgraph persist ["持久化层"]
-        direction TB
-        NFS["NFS 共享存储\n集群部署"]
-        Redis[("Redis :6379\nPub/Sub + Stream")]
-        Gap2[ ]
-        subgraph mongo ["MongoDB :27017  \n  sessions / configs"]
-        end
-        Gap[ ]
+        direction LR
+        Redis[("Redis\n:6379")]
+        MongoDB[("MongoDB\n:27017")]
+        PadNode[ ]
+        NFS["NFS\n共享存储"]
     end
 
-    subgraph capability ["能力层"]
-        direction TB
-        LLM["LLM Proxy\nAnthropic / OpenAI"]
-        McpExt["MCP Servers\n业务工具服务"]
-    end
-
-    Browser -->|"会话"| Gateway
-    Browser -->|"配置"| Admin
+    Browser --> Gateway
+    Browser --> Admin
 
     Gateway -->|"订阅会话事件"| Redis
+    Gateway -->|"创建会话\n读取会话历史"| MongoDB
+    Admin -->|"LLM & MCP 配置"| MongoDB
+    Admin -->|"Skill 创建"| NFS
 
-    Gateway -->|"创建会话任务\n获取历史消息"| mongo
-    Admin -->|"LLM & MCP 配置"| mongo
-    LLMProxy -->|"读取 LLM 配置"| mongo
+    Bwrap -->|"LLM 推理\nUnix socket"| LLMProxy
+    Bwrap -->|"MCP 调用\nUnix socket"| McpProxy
 
-    Bwrap -.->|"共享挂载"| NFS
-    SkillFS -.->|"共享挂载"| NFS
-    PiTools -->|"路径白名单"| NFS
-
-    PiAgent -->|"增量输出事件"| Redis
-
-    PiAgent -->|"更新会话状态\n存储历史消息\n读取 MCP 配置"| mongo
-
-    piruntime -->|"LLM 推理"| LLM
-    McpAdapter -->|"MCP 调用"| McpExt
+    execution -->|"推送会话事件"| Redis
+    execution -->|"读取 mcp/llm 配置\n写入会话历史"| MongoDB
+    execution -->|"workspace / Skill 挂靠"| NFS
 
     style mid fill:none,stroke:none
-    style row_api fill:none,stroke:none
-    style Gap fill:none,stroke:none,color:transparent
-    style Gap2 fill:none,stroke:none,color:transparent
+    style proxies fill:none,stroke:none
+    style PadNode fill:none,stroke:none,color:transparent
 ```
 
 ---
@@ -81,7 +67,8 @@ flowchart LR
 | **gateway** | 8000 | Python FastAPI | 会话 CRUD、SSE 流式输出、Skill 元数据列表 |
 | **admin** | 9000 | Python FastAPI | MCP Server 配置、Skill 管理（元数据 + 文件）|
 | **llm-proxy** | 9001 | Python FastAPI | LLM 代理（OpenAI 兼容）、Provider 配置热更新 |
-| **pi-runtime** | — | Node.js + Pi Agent | Agent 任务执行、bwrap 沙盒隔离、MCP 工具调用 |
+| **mcp-proxy** | 8080 | Node.js | MCP 聚合代理：汇总所有 MCP Server 工具，统一路由调用 |
+| **pi-runtime** | — | Node.js + Pi Agent | Agent 任务执行、bwrap 沙盒隔离、Unix socket 网络白名单 |
 | **redis** | 6379 | Redis 7 | 会话任务 Pub/Sub + 增量输出 Stream |
 | **mongo** | 27017 | MongoDB 7 | 会话数据、LLM / MCP 配置、Skill 元数据 |
 
@@ -121,9 +108,10 @@ pi-agent-platform/
 ├── docker-compose.yml     # 单节点编排
 ├── docker-compose.prod.yml # 集群覆盖配置（NFS 卷）
 ├── .env.example
-├── frontend/              # React + Vite 前端（README.md）
-├── gateway/               # FastAPI 会话网关（README.md）
-├── admin/                 # FastAPI 管理服务 - MCP/Skill 配置（README.md）
-├── llm-proxy/             # FastAPI LLM 代理服务（README.md）
-└── pi-runtime/            # Node.js Pi Agent 执行引擎（README.md）
+├── frontend/              # React + Vite 前端 
+├── gateway/               # FastAPI 会话网关 
+├── admin/                 # FastAPI 管理服务 - MCP/Skill 配置 
+├── llm-proxy/             # FastAPI LLM 代理服务 
+├── mcp-proxy/             # Node.js MCP 聚合代理 
+└── pi-runtime/            # Node.js Pi Agent 执行引擎 
 ```
