@@ -34,9 +34,20 @@ class SessionDocument(BaseModel):
 class CreateSessionRequest(BaseModel):
     user_id: str
     request: str
+    turn_id: str           # 第一个轮次 ID，由前端生成（UUID），用于 SSE stream key
     skill_ids: list[str] = []
-    conversation_id: str | None = None   # 关联到同一对话线程；前端生成，首条消息时赋值
-    context: str | None = None           # 格式化的历史上下文（仅用于本次 pi 调用，不持久化）
+
+
+class SendMessageRequest(BaseModel):
+    """向已有 session 发送新消息（新轮次）"""
+    request: str
+    turn_id: str           # 本轮次 ID，由前端生成，用于 SSE stream key
+    skill_ids: list[str] = []
+
+
+class SendMessageResponse(BaseModel):
+    turn_id: str
+    session_id: str
 
 
 class CreateSessionResponse(BaseModel):

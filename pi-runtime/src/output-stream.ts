@@ -3,9 +3,15 @@ import { appendEventSnapshot } from "./mongo-client";
 import { config } from "./config";
 
 // Redis Stream key 模板（与 gateway 保持一致）
+// session 级：session:{sessionId}:stream（向后兼容）
+// turn 级：session:{sessionId}:turn:{turnId}:stream（多轮对话）
 const STREAM_KEY_TPL = "session:{sessionId}:stream";
+const TURN_STREAM_KEY_TPL = "session:{sessionId}:turn:{turnId}:stream";
 
-function buildStreamKey(sessionId: string): string {
+function buildStreamKey(sessionId: string, turnId?: string): string {
+  if (turnId) {
+    return TURN_STREAM_KEY_TPL.replace("{sessionId}", sessionId).replace("{turnId}", turnId);
+  }
   return STREAM_KEY_TPL.replace("{sessionId}", sessionId);
 }
 
@@ -19,14 +25,14 @@ export interface OutputEvent {
 export class SessionOutputStream {
   private readonly streamKey: string;
   private pushCount = 0;
-  // 内存中积累所有非 done 事件，session 结束时一次性写入 MongoDB snapshot
   private readonly pendingSnapshot: Array<Record<string, string>> = [];
 
   constructor(
     private readonly redis: Redis,
-    private readonly sessionId: string
+    private readonly sessionId: string,
+    private readonly turnId?: string   // 多轮对话时指定轮次，生成 turn 级 stream key
   ) {
-    this.streamKey = buildStreamKey(sessionId);
+    this.streamKey = buildStreamKey(sessionId, turnId);
   }
 
   async push(event: OutputEvent): Promise<void> {

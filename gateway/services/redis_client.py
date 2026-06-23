@@ -74,12 +74,11 @@ async def publish_task(
     session_id: str,
     user_id: str,
     request: str,
+    turn_id: str,
     skill_ids: list[str] | None = None,
-    conversation_id: str | None = None,
-    context: str | None = None,
 ) -> None:
     """
-    向 pi-runtime 发布新 session 任务。
+    向 pi-runtime 发布新 session 任务（创建 session + 发送第一条消息）。
 
     Sticky session 路由逻辑：
       1. 查询该 user 是否已绑定到某个 pi-runtime 实例
@@ -90,9 +89,8 @@ async def publish_task(
         "session_id": session_id,
         "user_id": user_id,
         "request": request,
+        "turn_id": turn_id,
         "skill_ids": skill_ids or [],
-        "conversation_id": conversation_id,
-        "context": context,
     })
     client = get_redis()
 
@@ -107,6 +105,26 @@ async def publish_task(
     await client.publish(channel, payload)
 
 
+async def publish_message(
+    session_id: str,
+    user_id: str,
+    request: str,
+    turn_id: str,
+    skill_ids: list[str] | None = None,
+) -> None:
+    """向已有 session 发送新消息（新轮次），发布到 session 专属频道。"""
+    payload = json.dumps({
+        "session_id": session_id,
+        "user_id": user_id,
+        "request": request,
+        "turn_id": turn_id,
+        "skill_ids": skill_ids or [],
+    })
+    channel = f"sessions:{session_id}:message"
+    await get_redis().publish(channel, payload)
+    logger.info("消息已发布: session=%s turn=%s channel=%s", session_id, turn_id, channel)
+
+
 async def bind_user_to_instance(user_id: str, instance_id: str) -> None:
     """
     pi-runtime 实例认领任务后，将 user → instance 绑定关系写入 Redis。
@@ -118,9 +136,24 @@ async def bind_user_to_instance(user_id: str, instance_id: str) -> None:
     logger.info("user 实例绑定: user=%s → instance=%s TTL=%ds", user_id, instance_id, USER_INSTANCE_TTL)
 
 
+async def stream_turn_output(
+    session_id: str,
+    turn_id: str,
+    start_seq: str = "0",
+) -> AsyncGenerator[dict[str, Any], None]:
+    """
+    从 Redis Stream 持续拉取指定轮次的输出事件。
+    stream key: session:{session_id}:turn:{turn_id}:stream
+    """
+    turn_stream_key = f"session:{session_id}:turn:{turn_id}:stream"
+    async for item in stream_session_output(session_id, start_seq, stream_key_override=turn_stream_key):
+        yield item
+
+
 async def stream_session_output(
     session_id: str,
     start_seq: str = "0",
+    stream_key_override: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     从 Redis Stream 持续拉取 session 输出事件。
@@ -128,7 +161,7 @@ async def stream_session_output(
     每次 XREAD 阻塞 sse_block_ms 毫秒，超时则 yield 心跳后继续。
     """
     client = get_redis()
-    stream_key = _get_stream_key(session_id)
+    stream_key = stream_key_override or _get_stream_key(session_id)
     last_id = start_seq
     heartbeat_count = 0
 

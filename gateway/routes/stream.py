@@ -11,10 +11,43 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["stream"])
 
-# SSE 心跳事件名称
 _HEARTBEAT_EVENT = "heartbeat"
-# SSE 历史快照事件名称
 _SNAPSHOT_EVENT = "snapshot"
+
+
+@router.get("/{session_id}/turns/{turn_id}/stream")
+async def stream_turn(
+    request: Request,
+    session_id: str,
+    turn_id: str,
+    last_seq: str = Query(default="0"),
+) -> EventSourceResponse:
+    """
+    SSE 接口：订阅指定轮次（turn）的输出流。
+    前端在发送消息后用此接口实时接收 pi 的响应。
+    stream key: session:{session_id}:turn:{turn_id}:stream
+    """
+    session = await mongo_client.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session 不存在")
+
+    logger.info("Turn SSE 连接建立: session_id=%s turn_id=%s last_seq=%s", session_id, turn_id, last_seq)
+
+    async def event_generator():
+        async for item in redis_client.stream_turn_output(session_id, turn_id, start_seq=last_seq):
+            if await request.is_disconnected():
+                return
+            if item.get("heartbeat"):
+                yield {"event": _HEARTBEAT_EVENT, "data": ""}
+                continue
+
+            event_type = item.get("event_type", "token")
+            yield {"event": event_type, "id": item.get("id"), "data": item.get("content", "")}
+
+            if event_type == "done":
+                return
+
+    return EventSourceResponse(event_generator())
 
 
 @router.get("/{session_id}/stream")
