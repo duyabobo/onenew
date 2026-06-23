@@ -4,6 +4,9 @@
  */
 import { MongoClient, Db, Filter, Document } from "mongodb";
 import { config } from "./config.js";
+import { getLogger } from "./logger.js";
+
+const logger = getLogger("mongo");
 
 let client: MongoClient | null = null;
 
@@ -15,7 +18,7 @@ function getDb(): Db {
 export async function connect(): Promise<void> {
   client = new MongoClient(config.mongo.uri);
   await client.connect();
-  console.log(`[mcp-proxy:mongo] 已连接: ${config.mongo.uri}`);
+  logger.info(`已连接: ${config.mongo.uri}`);
 }
 
 export async function disconnect(): Promise<void> {
@@ -44,7 +47,7 @@ export async function readEnabledMcpServers(): Promise<McpServerEntry[]> {
 
   for (const [name, cfg] of Object.entries(servers)) {
     if (!cfg.url) {
-      console.warn(`[mcp-proxy] MCP server "${name}" 缺少 url 字段，已跳过`);
+      logger.warn(`MCP server "${name}" 缺少 url 字段，已跳过`);
       continue;
     }
     if (cfg.enabled === false) continue;

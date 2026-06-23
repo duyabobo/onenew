@@ -13,6 +13,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { McpServerEntry } from "./mongo-client.js";
+import { getLogger } from "./logger.js";
+
+const logger = getLogger("aggregator");
 
 export interface ToolDefinition {
   name: string;
@@ -50,7 +53,7 @@ export class McpAggregator {
     }
 
     this.lastRefreshAt = Date.now();
-    console.log(`[mcp-proxy:aggregator] 刷新完成，共 ${this.toolMap.size} 个工具`);
+    logger.info(`刷新完成，共 ${this.toolMap.size} 个工具`);
   }
 
   listTools(): ToolDefinition[] {
@@ -63,7 +66,7 @@ export class McpAggregator {
   ): Promise<unknown> {
     const entry = this.toolMap.get(name);
     if (!entry) throw new Error(`工具未找到: ${name}`);
-    console.log(`[mcp-proxy:aggregator] 调用工具: ${name} → server=${entry.serverName}`);
+    logger.info(`调用工具: ${name} → server=${entry.serverName}`);
     return await entry.client.callTool({ name, arguments: args });
   }
 
@@ -78,8 +81,8 @@ export class McpAggregator {
       let loaded = 0;
       for (const tool of tools) {
         if (this.toolMap.has(tool.name)) {
-          console.warn(
-            `[mcp-proxy:aggregator] 工具名冲突: "${tool.name}" ` +
+          logger.warn(
+            `工具名冲突: "${tool.name}" ` +
             `已存在于 ${this.toolMap.get(tool.name)!.serverName}，跳过 ${server.name}`
           );
           continue;
@@ -91,12 +94,9 @@ export class McpAggregator {
         });
         loaded++;
       }
-      console.log(`[mcp-proxy:aggregator] server=${server.name}: 加载 ${loaded} 个工具`);
+      logger.info(`server=${server.name}: 加载 ${loaded} 个工具`);
     } catch (err) {
-      console.error(
-        `[mcp-proxy:aggregator] 连接 MCP server 失败: name=${server.name} url=${server.url}`,
-        err
-      );
+      logger.error(`连接 MCP server 失败: name=${server.name} url=${server.url}`, { err });
     }
   }
 

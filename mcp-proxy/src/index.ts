@@ -15,6 +15,9 @@ import http from "http";
 import { config } from "./config.js";
 import { connect as connectMongo, readEnabledMcpServers } from "./mongo-client.js";
 import { McpAggregator } from "./mcp-aggregator.js";
+import { getLogger } from "./logger.js";
+
+const logger = getLogger();
 
 const aggregator = new McpAggregator(config.toolRefreshIntervalMs);
 
@@ -74,7 +77,7 @@ async function handleMcpRequest(body: string): Promise<unknown> {
         return jsonrpcResult(id, result);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[mcp-proxy] tools/call 失败: tool=${name}`, message);
+        logger.error(`tools/call 失败: tool=${name} ${message}`);
         return jsonrpcError(id, -32603, message);
       }
     }
@@ -117,7 +120,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(response));
     } catch (err) {
-      console.error("[mcp-proxy] 请求处理异常:", err);
+      logger.error("请求处理异常", { err });
       res.writeHead(500).end();
     }
     return;
@@ -134,15 +137,15 @@ async function main(): Promise<void> {
   // 启动时预热工具列表，失败不阻断启动
   const servers = await readEnabledMcpServers();
   await aggregator.refresh(servers).catch((err) =>
-    console.error("[mcp-proxy] 初始工具加载失败（将在首次请求时重试）:", err)
+    logger.error("初始工具加载失败（将在首次请求时重试）", { err })
   );
 
   server.listen(config.port, "0.0.0.0", () => {
-    console.log(`[mcp-proxy] 服务已启动 port=${config.port}`);
+    logger.info(`服务已启动 port=${config.port}`);
   });
 
   const shutdown = async () => {
-    console.log("[mcp-proxy] 正在关闭...");
+    logger.info("正在关闭...");
     server.close();
     process.exit(0);
   };
@@ -151,6 +154,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // 用 console 兜底，因为此时 logger 可能未初始化
   console.error("[mcp-proxy] 启动失败:", err);
   process.exit(1);
 });

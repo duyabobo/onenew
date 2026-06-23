@@ -5,17 +5,18 @@
 Pi-Runtime 是平台的执行核心，负责：
 
 - 订阅 Redis Pub/Sub，消费 gateway 派发的 session 任务
-- 从 MongoDB 读取最新 MCP 配置，为每个 session 生成独立的 pi config 目录
-- 为每个 session 创建独立的 bwrap 沙盒（文件系统隔离）
-- 以 RPC 模式启动 pi agent，执行用户请求
+- 为每个 session 创建 bwrap 沙盒（文件系统 + 网络双重隔离）
+- 启动 Unix socket 桥，为沙盒提供受控的网络白名单出口
+- 以 RPC 模式在沙盒内启动 pi agent，执行用户请求
 - 将 pi 生成的 token / 工具调用 / 结果流式推送到 Redis Stream
-- 任务完成后销毁 bwrap 沙盒，更新 MongoDB session 状态
+- 任务完成后销毁沙盒，更新 MongoDB session 状态
 
 **不负责**：
 - 对外暴露 HTTP 接口（纯消费者）
 - 用户认证 / session 创建（由 gateway 负责）
-- LLM 直连（通过 admin 代理）
-- 配置管理（由 admin 负责，pi-runtime 只读取）
+- LLM 直连（通过 llm-proxy 代理）
+- MCP 工具调用（通过 mcp-proxy 代理）
+- MCP / LLM 配置管理（由 admin 负责）
 
 ---
 
@@ -24,14 +25,15 @@ Pi-Runtime 是平台的执行核心，负责：
 ```
 pi-runtime/
 ├── src/
-│   ├── worker.ts         主入口：Redis 订阅 + session 调度
-│   ├── pi-session.ts     从 MongoDB 读 MCP 配置、启动 pi RPC 进程、解析 JSONL 输出
-│   ├── sandbox.ts        bwrap 沙盒生命周期（创建 / 执行 / 销毁）
+│   ├── worker.ts         主入口：Redis 订阅 + session 调度 + socket bridge 启动
+│   ├── pi-session.ts     启动 pi RPC 进程（在沙盒内），解析 JSONL 输出
+│   ├── sandbox.ts        bwrap 沙盒生命周期（创建 / 销毁）+ 外层 bwrap 参数构建
+│   ├── socket-bridge.ts  Unix socket 代理服务器（LLM / MCP 网络白名单）
 │   ├── output-stream.ts  Redis Stream XADD 输出推送
-│   └── mongo-client.ts   MongoDB session 状态更新 + MCP 配置读取
+│   └── mongo-client.ts   MongoDB：session 状态更新 + 孤儿 session 恢复
 └── extensions/
-    ├── bwrap/            Pi 扩展：拦截 bash 工具调用，路由到 bwrap
-    └── mcp-servers/      内置 MCP 工具服务器（http-client / database）
+    ├── bwrap/            Pi 扩展：路径白名单校验（read/write/edit），bash 工具适配
+    └── sandbox-init/     沙盒启动脚本：启用 loopback + TCP↔Unix socket 桥
 ```
 
 ---
@@ -49,10 +51,13 @@ worker.ts: 收到任务 payload { session_id, user_id, request }
   ├─ 3. createSandbox → 创建 /data/sandboxes/users/{uid}/sessions/{sid}/
   │                       workspace/  home/  tmp/
   │
-  ├─ 4. runPiSession
-  │       ├── getMcpConfig() → 读 MongoDB configs.mcp（最新配置）
-  │       ├── 写 /tmp/pi-config/{sid}/mcp.json
-  │       ├── 启动 pi --mode rpc（PI_CODING_AGENT_DIR 指向独立 config 目录）
+  ├─ 4. startPiSession
+  │       ├── 写 /tmp/pi-config/{sid}/mcp.json（指向沙盒内 mcp-proxy 桥）
+  │       ├── 写 /tmp/pi-config/{sid}/models.json（指向沙盒内 llm-proxy 桥）
+  │       ├── bwrap 外层沙盒启动 sandbox-init.sh
+  │       │     ├── ip link set lo up（启用 loopback）
+  │       │     ├── bridge.js（127.0.0.1:9001 ↔ llm.sock，127.0.0.1:8080 ↔ mcp.sock）
+  │       │     └── exec pi --mode rpc
   │       ├── 发送 prompt → pi stdin
   │       └── 解析 pi stdout JSONL：
   │             text event      → XADD session:{id}:stream event_type=token
@@ -67,76 +72,86 @@ worker.ts: 收到任务 payload { session_id, user_id, request }
 
 ---
 
-## MCP 配置加载
+## 沙盒安全架构
 
-MCP 配置由 admin 服务管理，pi-runtime **直接从 MongoDB 读取**：
+### 双重隔离设计
 
-```
-admin PUT /config/mcp → 写 MongoDB configs.mcp
-
-session 启动时（pi-session.ts）：
-  getMcpConfig()
-    → 读 MongoDB configs.mcp（每 session 独立读一次，拿到最新配置）
-    → 写 /tmp/pi-config/{session_id}/mcp.json
-    → 通过 PI_CODING_AGENT_DIR 让 pi 使用该 config 目录
-    → pi-mcp-adapter 从该目录读 mcp.json，按需启动 MCP server 进程
-```
-
-**每个 session 使用独立的 pi config 目录**（`/tmp/pi-config/{session_id}/`），避免并发 session 之间的配置文件冲突。
-
-内置 MCP Server：
-
-| MCP Server | 工具 | 网络访问 | 说明 |
-|-----------|------|---------|------|
-| filesystem | 文件读写 | 无 | 限制在 /workspace 目录 |
-| http-client | http_get / http_post | 有 | 运行在沙盒外，可访问外网 |
-| database | db_find / db_count | 有 | MongoDB 只读查询 |
-
-> MCP server 进程运行在 bwrap 沙盒**外**，可正常访问网络。
-
----
-
-## bwrap 沙盒
-
-### 隔离粒度：session 级别
-
-每个 session 拥有完全独立的文件系统，不同 session 互不可见：
+pi 进程本身运行在外层 bwrap 沙盒内，不仅 bash 命令被隔离，pi 进程本身也被完全隔离：
 
 ```
-/data/sandboxes/users/{user_id}/sessions/{session_id}/
-  workspace/   ← pi 的工作目录，读写，session 结束后销毁
-  home/        ← 独立 HOME（.bashrc / pip 包路径），session 结束后销毁
-  tmp/         ← 临时文件，session 结束后销毁
+┌─────────────────────────────────────────────────────────┐
+│  pi-runtime（宿主进程，有网）                             │
+│  socket-bridge: /tmp/pi-socks/llm.sock → llm-proxy     │
+│                 /tmp/pi-socks/mcp.sock → mcp-proxy     │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  bwrap 沙盒（--unshare-net，per session）         │  │
+│  │                                                  │  │
+│  │  bridge.js: 127.0.0.1:9001 ↔ llm.sock           │  │
+│  │             127.0.0.1:8080 ↔ mcp.sock           │  │
+│  │                                                  │  │
+│  │  pi（--mode rpc）                                │  │
+│  │    LLM 调用 → http://127.0.0.1:9001/v1          │  │
+│  │    MCP 调用 → http://127.0.0.1:8080/mcp         │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### bwrap 挂载策略
 
+| 挂载参数 | 目录 | 权限 | 说明 |
+|---------|------|------|------|
+| `--ro-bind / /` | 根文件系统 | 只读 | 提供系统工具、pi 可执行文件 |
+| `--tmpfs {sandboxRoot}` | 沙盒根目录 | 内存覆盖 | 对沙盒内隐藏其他 session 数据 |
+| `--bind {workspace}` | session 工作目录 | 读写 | pi 的文件操作目标 |
+| `--bind {home}` | session home | 读写 | .bashrc / pip 包路径 |
+| `--bind {tmp}` | session tmp | 读写 | 临时文件 |
+| `--bind {piConfigDir}` | pi config 目录 | 读写 | mcp.json / models.json / bwrap.ready |
+| `--ro-bind /tmp/pi-socks` | Unix socket 目录 | **只读** | 网络白名单，pi 只能连接不能篡改 |
+| `--unshare-net` | — | — | 完全断网，唯一出口是 Unix socket |
+| `--unshare-pid` | — | — | 独立 PID 空间 |
+
+### 网络白名单安全性
+
+`/tmp/pi-socks/` 以只读方式挂载进沙盒：
+
+- pi 只能 **connect** 到 socket（读操作）
+- pi 无法**创建、删除、替换** socket 文件（只读目录）
+- `--unshare-net` 切断所有其他网络出口
+- socket 文件由 pi-runtime 在沙盒外创建，pi 无法伪造
+
+### pi 沙盒内无法访问的内容
+
+| 资源 | 隔离方式 |
+|------|---------|
+| MongoDB | 无凭据，无网络 |
+| Redis | 无凭据，无网络 |
+| 其他 session 的文件 | `--tmpfs {sandboxRoot}` 覆盖 |
+| 外部网络 / 互联网 | `--unshare-net` |
+| MCP Server（直连） | 无路由，只能经由 mcp-proxy |
+
+### bwrap 扩展（extensions/bwrap）
+
+pi 在外层沙盒内运行时（`PI_OUTER_SANDBOX=1`）：
+
+| pi 工具 | 处理方式 |
+|--------|---------|
+| `bash` | 直接执行（继承外层沙盒的网络和文件系统隔离） |
+| `read` / `write` / `edit` | 路径白名单校验（workspace + home 范围内） |
+| `find` / `grep` / `ls` | 路径白名单校验 |
+
+---
+
+## Socket Bridge
+
+pi-runtime 启动时创建两个 Unix socket 代理服务器，作为沙盒的网络白名单出口：
+
 ```
---ro-bind / /                      → 根文件系统只读（提供系统工具、Python 运行时）
---bind {workspace} {workspace}     → workspace 可读写（路径内外一致）
---bind {home} {home}               → home 可读写（路径内外一致）
---bind {tmp} {tmp}                 → tmp 可读写
---unshare-net                      → 禁止网络
---unshare-pid                      → 独立 PID 空间
---die-with-parent                  → pi 进程退出时自动终止沙盒子进程
+/tmp/pi-socks/llm.sock  →  llm-proxy:9001  （LLM 推理）
+/tmp/pi-socks/mcp.sock  →  mcp-proxy:8080  （MCP 工具调用）
 ```
 
-### 路径一致性（关键设计）
-
-bwrap 内外使用**相同的绝对路径**（不用 `/workspace` 别名）：
-
-- pi 的 `bash` 工具（bwrap 子进程）看到的路径 = `/data/.../workspace/`
-- pi 的 `read/write/edit` 工具（Node.js 进程）看到的路径 = `/data/.../workspace/`
-- 两者操作同一个物理目录，无路径映射歧义
-
-### 工具拦截（bwrap 扩展）
-
-| pi 工具 | 执行位置 | 处理方式 |
-|--------|---------|---------|
-| `bash` | bwrap 子进程 | 完全替换：所有命令走 bwrap，禁网络 |
-| `read` | Node.js 进程 | 路径白名单校验，越界绝对路径拦截 |
-| `write` | Node.js 进程 | 路径白名单校验，越界绝对路径拦截 |
-| `edit` | Node.js 进程 | 路径白名单校验，越界绝对路径拦截 |
+两个 socket 均为纯字节转发，不解析协议，支持 HTTP、SSE 等所有 TCP 上层协议。
 
 ---
 
@@ -179,8 +194,9 @@ volumes:
 | 依赖 | 用途 | 方向 |
 |------|------|------|
 | Redis | 订阅任务 + 推送输出流 | 消费 + 写入 |
-| MongoDB | session 状态更新 + MCP 配置读取 | 读写 |
-| Admin | LLM 推理代理 | HTTP 调用 |
+| MongoDB | session 状态更新 + 孤儿 session 恢复 | 读写 |
+| llm-proxy | LLM 推理（经 Unix socket 桥） | HTTP 调用 |
+| mcp-proxy | MCP 工具调用（经 Unix socket 桥） | HTTP 调用 |
 | 共享存储卷 | session sandbox 数据 | 读写 |
 
 **不依赖**：gateway（gateway 依赖 pi-runtime，反向不成立）
@@ -194,9 +210,12 @@ volumes:
 | `REDIS_URL` | Redis 连接串 | `redis://redis:6379` |
 | `MONGO_URI` | MongoDB 连接串 | `mongodb://mongo:27017` |
 | `MONGO_DB` | 数据库名 | `pi_agent` |
-| `OPENAI_BASE_URL` | LLM 代理地址（指向 admin）| `http://admin:9000/v1` |
-| `OPENAI_API_KEY` | LLM 内部 token | `pi-agent-internal` |
+| `OPENAI_API_KEY` | LLM 内部 token（传给 pi） | `pi-agent-internal` |
 | `SANDBOX_ROOT` | bwrap 沙盒根目录 | `/data/sandboxes` |
+| `LLM_PROXY_HOST` | llm-proxy 主机名 | `llm-proxy` |
+| `LLM_PROXY_PORT` | llm-proxy 端口 | `9001` |
+| `MCP_PROXY_HOST` | mcp-proxy 主机名 | `mcp-proxy` |
+| `MCP_PROXY_PORT` | mcp-proxy 端口 | `8080` |
 
 ---
 
