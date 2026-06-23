@@ -34,10 +34,11 @@ flowchart LR
     subgraph persist ["持久化层"]
         direction TB
         NFS["NFS 共享存储\n集群部署"]
+        Redis[("Redis :6379\nPub/Sub + Stream")]
+        Gap2[ ]
         subgraph mongo ["MongoDB :27017  \n  sessions / configs"]
         end
         Gap[ ]
-        Redis[("Redis :6379\nPub/Sub + Stream")]
     end
 
     subgraph capability ["能力层"]
@@ -49,11 +50,11 @@ flowchart LR
     Browser -->|"会话"| Gateway
     Browser -->|"配置"| Admin
 
+    Gateway -->|"订阅会话事件"| Redis
+
     Gateway -->|"创建会话任务\n获取历史消息"| mongo
     Admin -->|"LLM & MCP 配置"| mongo
     LLMProxy -->|"读取 LLM 配置"| mongo
-
-    Gateway -->|"订阅会话事件"| Redis
 
     Bwrap -.->|"共享挂载"| NFS
     SkillFS -.->|"共享挂载"| NFS
@@ -69,6 +70,7 @@ flowchart LR
     style mid fill:none,stroke:none
     style row_api fill:none,stroke:none
     style Gap fill:none,stroke:none,color:transparent
+    style Gap2 fill:none,stroke:none,color:transparent
 ```
 
 ---
