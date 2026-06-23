@@ -26,6 +26,7 @@ flowchart LR
             McpAdapter["pi-mcp-adapter\nMCP Client"]
             Bwrap["bwrap\nsession 级别的 cmd 执行沙盒"]
             SkillFS["Skill 文件管理\nuser 级别的文件管理系统"]
+            PiTools["pi 内部工具命令\nread / write / edit / find / grep / ls"]
             PiAgent["任务执行"]
         end
     end
@@ -56,6 +57,7 @@ flowchart LR
 
     Bwrap -.->|"共享挂载"| NFS
     SkillFS -.->|"共享挂载"| NFS
+    PiTools -->|"路径白名单"| NFS
 
     PiAgent -->|"增量输出事件"| Redis
 
